@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 
 import pytest
 
@@ -285,3 +286,49 @@ def test_a_manifest_with_files_written_short_is_refused(tmp_path):
     assert any("['files'] are missing" in e for e in manifest_errors({**ds.manifest, "files": {}}))
     assert any("['files'] are missing" in e
                for e in manifest_errors({**ds.manifest, "files": {"answers": "human_answers.json"}}))
+
+
+@pytest.mark.parametrize("data, expect", [
+    (b"[]", "is not a JSON object"), (b"\xe9t\xe9", "is not UTF-8 text"),
+    (b"[" * 100000 + b"]" * 100000, "is nested too deeply to read"),
+    (b"{\n<<<<<<< HEAD\n", "is not valid JSON"),
+    (b'{"rows": ' + b"9" * 5000 + b"}", "cannot be read as JSON"),
+], ids=["list", "latin-1", "deep", "conflict", "huge-number"])
+def test_dataset_files_that_cannot_be_read_as_an_object_are_named_refusals(tmp_path, data, expect):
+    import sys
+    # Python's default limit, so PYTHONINTMAXSTRDIGITS=0 cannot let the huge number through.
+    old = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(4300)
+    try:
+        _check_unreadable(tmp_path, data, expect)
+    finally:
+        sys.set_int_max_str_digits(old)
+
+
+def _check_unreadable(tmp_path, data, expect):
+    ds = Dataset.create(tmp_path / "d", "demo", "c", {"speakers": SPEAKERS})
+    add_items(ds, tmp_path / "state", [{"item": make_item("item/a", "Hello there, friend."), "row": {"title": "A"}}])
+    for path, read in ((tmp_path / "d" / "manifest.json", lambda: Dataset.open(tmp_path / "d")),
+                       (ds.file("catalog"), ds.catalog), (ds.item_path("item/a"), lambda: ds.item("item/a"))):
+        good = path.read_bytes()
+        path.write_bytes(data)
+        with pytest.raises(SystemExit, match=rf"{path.name} ({expect})"):
+            read()
+        path.write_bytes(good)
+
+
+def test_an_item_written_under_a_latin_1_locale_reads_back(tmp_path):
+    # Item files are read as UTF-8, so they must be written as UTF-8 whatever the locale.
+    import subprocess
+    import sys
+    code = ("import sys, pathlib\n"
+            "from transcript_labeling.dataset3 import Dataset\n"
+            "from transcript_labeling.items import add_items, make_item\n"
+            "t = pathlib.Path(sys.argv[1])\n"
+            "ds = Dataset.create(t / 'd', 'demo', 'c', {'speakers': [{'id': 'ann', 'label': 'Ann', 'key': '1'}]})\n"
+            "add_items(ds, t / 'state', [{'item': make_item('item/a', 'Caf\\u00e9 au lait'), 'row': {'title': 'A'}}])\n"
+            "print(sys.getfilesystemencoding(), ds.item('item/a')['text'] == 'Caf\\u00e9 au lait')\n")
+    env = {**os.environ, "LC_ALL": "en_US.ISO8859-1", "PYTHONUTF8": "0", "PYTHONIOENCODING": "utf-8"}
+    out = subprocess.run([sys.executable, "-c", code, str(tmp_path)], env=env, capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr[-500:]
+    assert out.stdout.split()[-1] == "True"

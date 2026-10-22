@@ -187,6 +187,29 @@ def checklist_errors(checklist: dict, taken: set[str]) -> None:
                          f"got {accept!r}")
 
 
+def read_json_object(path: Path) -> dict:
+    """The JSON object stored in `path`, or a refusal that names the file.
+
+    Refuses a file that is not UTF-8, is not JSON (a merge left conflict markers in
+    it, say), holds a number Python will not convert, is nested too deeply to parse,
+    or holds something other than an object. A missing file still raises
+    FileNotFoundError.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError:
+        raise SystemExit(f"REFUSING: {path} is not UTF-8 text") from None
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"REFUSING: {path} is not valid JSON ({exc.msg}, line {exc.lineno})") from None
+    except ValueError as exc:  # after its two subclasses above; an integer of over 4300 digits, say
+        raise SystemExit(f"REFUSING: {path} cannot be read as JSON ({exc})") from None
+    except RecursionError:
+        raise SystemExit(f"REFUSING: {path} is nested too deeply to read") from None
+    if not isinstance(data, dict):
+        raise SystemExit(f"REFUSING: {path} is not a JSON object")
+    return data
+
+
 def manifest_errors(manifest: dict) -> list[str]:
     """Everything wrong with a version-3 manifest; empty when it is sound."""
     if not isinstance(manifest, dict):
@@ -230,12 +253,7 @@ class Dataset:
         path = root / MANIFEST
         if not path.exists():
             raise SystemExit(f"REFUSING: {root} has no {MANIFEST}")
-        try:
-            manifest = json.loads(path.read_text())
-        except json.JSONDecodeError as exc:
-            raise SystemExit(f"REFUSING: {path} is not valid JSON ({exc.msg}, line {exc.lineno})") from None
-        if not isinstance(manifest, dict):
-            raise SystemExit(f"REFUSING: {path} is not a JSON object")
+        manifest = read_json_object(path)
         if manifest.get("schema_version") == 2:
             raise SystemExit(f"REFUSING: {path} is a version-2 session; adopt it with `tl dataset adopt`")
         problems = manifest_errors(manifest)
@@ -293,13 +311,13 @@ class Dataset:
         return self.items_dir / rel
 
     def item(self, key: str) -> dict:
-        return json.loads(self.item_path(key).read_text())
+        return read_json_object(self.item_path(key))
 
     def catalog(self) -> dict:
         path = self.file("catalog")
         if not path.exists():
             raise SystemExit(f"REFUSING: {path} is missing; the dataset's catalog was deleted or never written")
-        cat = json.loads(path.read_text())
+        cat = read_json_object(path)
         if not isinstance(cat.get("rows"), list) or not isinstance(cat.get("quote_rows"), list):
             raise SystemExit(f"REFUSING: {path} needs `rows` and `quote_rows` lists")
         return cat
