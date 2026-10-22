@@ -19,7 +19,7 @@ def test_missing_file_reads_as_every_section_empty(tmp_path):
 def test_a_file_that_is_not_an_answers_file_is_refused(tmp_path, raw):
     p = tmp_path / "a.json"
     p.write_text(json.dumps(raw))
-    with pytest.raises(SystemExit, match="not an answers file"):
+    with pytest.raises(SystemExit, match="not an answers file|a.json is not a JSON object"):
         load_answers(p)
 
 
@@ -370,3 +370,35 @@ def test_a_symlinked_answers_file_is_refused(tmp_path):
     with pytest.raises(SystemExit, match="is a symlink"):
         store.load_versioned()
     assert (tmp_path / "human_answers.json").is_symlink()
+
+
+BAD_JSON = {"list": (b"[]", "is not a JSON object"), "latin-1": (b"\xe9t\xe9", "is not UTF-8 text"),
+            "conflict": (b'{"a": 1,\n<<<<<<< HEAD\n', "is not valid JSON"),
+            "deep": (b"[" * 100000 + b"]" * 100000, "is nested too deeply to read")}
+
+
+@pytest.mark.parametrize("bad", sorted(BAD_JSON))
+def test_every_state_file_that_cannot_be_read_as_an_object_is_refused_by_name(tmp_path, bad):
+    from transcript_labeling.auth import Auth
+    from transcript_labeling.home import Home
+    from transcript_labeling.registry import Registry
+    from transcript_labeling.store import EventLog, load_answers, load_review
+    data, expect = BAD_JSON[bad]
+    home = Home(tmp_path / "h")
+    home.init()
+    auth = Auth(home)
+    readers = {home.config_path: home.config, home.registry_path: Registry(home).load,
+               home.sessions_path: auth._load, tmp_path / "human_answers.json": lambda: load_answers(tmp_path / "human_answers.json"),
+               tmp_path / "review.json": lambda: load_review(tmp_path / "review.json")}
+    for path, read in readers.items():
+        path.write_bytes(data)
+        with pytest.raises(SystemExit, match=f"{path.name} {expect}"):
+            read()
+    log = EventLog(tmp_path / "events.jsonl")
+    log.append("answer", "k", "operator", "browser", None)
+    with open(log.path, "ab") as fh:
+        fh.write(data.split(b"\n")[0] + b"\n")
+    expect_log = {"list": "line 2 is not a JSON object", "latin-1": "is not UTF-8 text",
+                  "conflict": "line 2 is not valid JSON", "deep": "line 2 is nested too deeply"}[bad]
+    with pytest.raises(SystemExit, match=f"events.jsonl {expect_log}"):
+        log.read()

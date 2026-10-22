@@ -31,7 +31,7 @@ from .checklist import RESERVED_KEYS, STICKY_LABEL_FIELDS
 from .dataset import MODE_SECTION, MODES
 from .registry import NAME
 from .spans import quote_review, sidecar_path
-from .store import write_atomic
+from .store import read_json_object, write_atomic
 
 SCHEMA_VERSION = 3
 TOOL = "transcript-labeling"
@@ -185,29 +185,6 @@ def checklist_errors(checklist: dict, taken: set[str]) -> None:
     if not (isinstance(accept, list) and all(isinstance(f, str) and f in bools for f in accept)):
         raise SystemExit(f"REFUSING: a checklist needs `accept_when_true`, a list of its bool field names; "
                          f"got {accept!r}")
-
-
-def read_json_object(path: Path) -> dict:
-    """The JSON object stored in `path`, or a refusal that names the file.
-
-    Refuses a file that is not UTF-8, is not JSON (a merge left conflict markers in
-    it, say), holds a number Python will not convert, is nested too deeply to parse,
-    or holds something other than an object. A missing file still raises
-    FileNotFoundError.
-    """
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except UnicodeDecodeError:
-        raise SystemExit(f"REFUSING: {path} is not UTF-8 text") from None
-    except json.JSONDecodeError as exc:
-        raise SystemExit(f"REFUSING: {path} is not valid JSON ({exc.msg}, line {exc.lineno})") from None
-    except ValueError as exc:  # after its two subclasses above; an integer of over 4300 digits, say
-        raise SystemExit(f"REFUSING: {path} cannot be read as JSON ({exc})") from None
-    except RecursionError:
-        raise SystemExit(f"REFUSING: {path} is nested too deeply to read") from None
-    if not isinstance(data, dict):
-        raise SystemExit(f"REFUSING: {path} is not a JSON object")
-    return data
 
 
 def manifest_errors(manifest: dict) -> list[str]:

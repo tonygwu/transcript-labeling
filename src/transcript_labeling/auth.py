@@ -29,7 +29,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 from .home import Home, private_write
-from .store import locked
+from .store import locked, read_json_object
 
 CODE_TTL = timedelta(days=7)
 SESSION_TTL = timedelta(days=30)
@@ -75,7 +75,7 @@ class Auth:
         path = self.home.sessions_path
         if not path.exists():
             return {"schema_version": 1, "codes": {}, "sessions": {}}
-        data = json.loads(path.read_text())
+        data = read_json_object(path)
         if data.get("schema_version") != 1 or not isinstance(data.get("codes"), dict) \
                 or not isinstance(data.get("sessions"), dict):
             raise SystemExit(f"REFUSING: {path} is not a version-1 sessions file")

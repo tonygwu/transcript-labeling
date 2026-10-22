@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 from .home import Home
-from .store import write_atomic
+from .store import read_json_object, write_atomic
 
 NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}")
 PRIVACY = ("local-only", "git-private")
@@ -91,7 +91,7 @@ class Registry:
         path = self.home.registry_path
         if not path.exists():
             return {"schema_version": SCHEMA_VERSION, "projects": {}}
-        reg = json.loads(path.read_text())
+        reg = read_json_object(path)
         if reg.get("schema_version") != SCHEMA_VERSION or not isinstance(reg.get("projects"), dict):
             raise SystemExit(f"REFUSING: {path} is not a version-{SCHEMA_VERSION} registry")
         return reg

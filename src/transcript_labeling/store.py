@@ -37,6 +37,29 @@ def fingerprint(path: Path) -> tuple | None:
     return (st.st_ino, st.st_size, st.st_mtime_ns, hashlib.sha256(data).hexdigest())
 
 
+def read_json_object(path: Path) -> dict:
+    """The JSON object stored in `path`, or a refusal that names the file.
+
+    Refuses a file that is not UTF-8, is not JSON (a merge left conflict markers in
+    it, say), holds a number Python will not convert, is nested too deeply to parse,
+    or holds something other than an object. A missing file still raises
+    FileNotFoundError.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError:
+        raise SystemExit(f"REFUSING: {path} is not UTF-8 text") from None
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"REFUSING: {path} is not valid JSON ({exc.msg}, line {exc.lineno})") from None
+    except ValueError as exc:  # after its two subclasses above; an integer of over 4300 digits, say
+        raise SystemExit(f"REFUSING: {path} cannot be read as JSON ({exc})") from None
+    except RecursionError:
+        raise SystemExit(f"REFUSING: {path} is nested too deeply to read") from None
+    if not isinstance(data, dict):
+        raise SystemExit(f"REFUSING: {path} is not a JSON object")
+    return data
+
+
 def write_atomic(path: str | Path, text: str, encoding: str = "utf-8", expect: tuple | None | bool = False,
                  written: list | None = None) -> Path:
     """Replace `path` with `text` in one step, or leave it exactly as it was.
@@ -97,7 +120,7 @@ def load_answers(path: Path) -> dict:
     """The answers in `path`, every section present. A malformed file stops the caller."""
     if not path.exists():
         return {s: {} for s in SECTIONS}
-    raw = json.loads(path.read_text())
+    raw = read_json_object(path)
     if (not isinstance(raw, dict) or not {"labels", "attribution"} <= set(raw) or set(raw) - set(SECTIONS)
             or not all(isinstance(v, dict) for v in raw.values())):
         raise SystemExit(f"REFUSING: {path} is not an answers file ({{'labels': ..., 'attribution': ...}})")
@@ -276,7 +299,7 @@ def load_review(path: Path) -> dict:
     """review.json: notes, item done marks, reveals and the dataset's Finish. A bad file stops the caller."""
     if not path.exists():
         return empty_review()
-    raw = json.loads(path.read_text())
+    raw = read_json_object(path)
     if not isinstance(raw, dict) or raw.get("schema_version") != 1 or set(raw) != {"schema_version",
                                                                                      *REVIEW_SECTIONS}:
         raise SystemExit(f"REFUSING: {path} is not a version-1 review file")
@@ -323,4 +346,21 @@ class EventLog:
     def read(self) -> list[dict]:
         if not self.path.exists():
             return []
-        return [json.loads(x) for x in self.path.read_text().splitlines() if x.strip()]
+        try:
+            text = self.path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            raise SystemExit(f"REFUSING: {self.path} is not UTF-8 text") from None
+        lines = []
+        for n, x in enumerate(text.splitlines(), 1):
+            if not x.strip():
+                continue
+            try:
+                line = json.loads(x)
+            except ValueError as exc:  # also catches a JSONDecodeError
+                raise SystemExit(f"REFUSING: {self.path} line {n} is not valid JSON ({exc})") from None
+            except RecursionError:
+                raise SystemExit(f"REFUSING: {self.path} line {n} is nested too deeply to read") from None
+            if not isinstance(line, dict):
+                raise SystemExit(f"REFUSING: {self.path} line {n} is not a JSON object")
+            lines.append(line)
+        return lines

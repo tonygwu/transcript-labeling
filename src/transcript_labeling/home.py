@@ -22,6 +22,8 @@ import secrets
 import stat
 from pathlib import Path
 
+from .store import read_json_object
+
 
 DEFAULT_HOME = "~/.local/share/transcript-labeling"
 DEFAULT_PORT = 8790
@@ -127,7 +129,7 @@ class Home:
         """The config, every key present. A missing file or key stops the caller."""
         if not self.config_path.exists():
             raise SystemExit(f"REFUSING: {self.config_path} does not exist; run `tl init`")
-        cfg = json.loads(self.config_path.read_text())
+        cfg = read_json_object(self.config_path)
         missing = [k for k in CONFIG_KEYS if k not in cfg]
         if missing:
             raise SystemExit(f"REFUSING: {self.config_path} has no {', '.join(missing)}")
