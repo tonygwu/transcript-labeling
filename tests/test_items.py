@@ -177,3 +177,19 @@ def test_a_killed_writers_staging_folder_is_removed(ds, tmp_path):
     (state / "staging-dead").mkdir(parents=True)
     add_items(ds, state, [entry()])
     assert not (state / "staging-dead").exists()
+
+
+@pytest.mark.parametrize("where, bad", [("duration", float("nan")), ("source", float("nan")),
+                                        ("focus", float("inf")), ("row", "Caf\ud83d"), ("focus", "Caf\ud83d"),
+                                        ("source", object())])
+def test_a_value_json_cannot_hold_refuses_the_batch_before_anything_is_written(tmp_path, where, bad):
+    # NaN, half of an emoji (a lone surrogate), and a value of no JSON type.
+    ds = Dataset.create(tmp_path / "d", "demo", "c", {"speakers": SPEAKERS})
+    item = make_item("call/one", "hello there friend", source={"x": bad} if where == "source" else None)
+    row = {"title": bad if where == "row" else "One", **({"duration": bad} if where == "duration" else {})}
+    focus = [{"start": 0, "end": 2, "title": bad}] if where == "focus" else []
+    with pytest.raises(SystemExit, match="nothing was written: call/one: its item, row or focus passages cannot "
+                                         "be written as JSON"):
+        add_items(ds, tmp_path / "state", [{"item": item, "row": row, "focus": focus}])
+    ds = Dataset.open(tmp_path / "d")
+    assert ds.manifest["items"] == {} and ds.catalog()["rows"] == [] and not ds.item_path("call/one").exists()

@@ -179,6 +179,17 @@ def add_items(ds: Dataset, state_dir: Path, entries: list[dict], *, upsert: bool
                 if q["qid"] in answered_qids and q["qid"] in old_q and old_q[q["qid"]] != new_q[q["qid"]]:
                     problems.append(f"{key}: answered passage {q['qid']} would cover other words")
             e["_quotes"] = quotes
+            try:
+                # Checked here, not when written, with the writers' settings (UTF-8, no
+                # NaN): the catalog is written after the item files are in place, so a
+                # refusal there would leave a half-added item. The writers indent, which
+                # this does not, so only nesting over about 1,000 levels can still differ.
+                json.dumps({"item": item, "row": e.get("row"), "focus": quotes}, ensure_ascii=False,
+                           allow_nan=False).encode("utf-8")
+            except (ValueError, TypeError):  # UnicodeEncodeError is a ValueError
+                problems.append(f"{key}: its item, row or focus passages cannot be written as JSON (NaN or "
+                                "Infinity, a broken character such as half an emoji, or a value that is not "
+                                "text, a number, true, false, null, a list or an object)")
         if problems:
             raise SystemExit("REFUSING: nothing was written: " + "; ".join(problems[:8]))
         staging = state_dir / f"staging-{secrets.token_hex(6)}"
