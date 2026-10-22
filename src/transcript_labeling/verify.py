@@ -106,7 +106,7 @@ def verify_session(session: Session, expect_answers_sha256: str | None = None,
     bad_side, sidecars = [], {}
     for key, idx in data.get("transcript_index", {}).items():
         try:
-            side = json.loads(session.sidecar(key).read_text())
+            side = json.loads(session.sidecar(key).read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             bad_side.append(f"{key}: {exc}")
             continue
@@ -143,7 +143,7 @@ def verify_session(session: Session, expect_answers_sha256: str | None = None,
             check(f"export {kind} reproduces {name}", False, f"no exporter for export kind {kind!r}")
             continue
         try:
-            disk = json.loads((session.root / name).read_text())
+            disk = json.loads((session.root / name).read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             check(f"export {kind} reproduces {name}", False, f"the export file is unreadable: {exc}")
             continue

@@ -199,7 +199,7 @@ class Home:
         mode = stat.S_IMODE(self.token_path.stat().st_mode)
         if mode & 0o077:
             raise SystemExit(f"REFUSING: {self.token_path} is mode {oct(mode)}; it must be 0600")
-        token = self.token_path.read_text().strip()
+        token = self.token_path.read_text(encoding="utf-8").strip()
         if len(token) < 32:
             raise SystemExit(f"REFUSING: {self.token_path} holds no usable token")
         return token

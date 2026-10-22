@@ -11,7 +11,8 @@ def write_session(root: Path, data: dict, *, modes=("speakers", "captions"), pro
                   name: str = "t", page: str = "page.html") -> Session:
     """A version-2 session whose page is just the data block, with a valid manifest."""
     root.mkdir(parents=True, exist_ok=True)
-    (root / page).write_text("<title>t</title><script>\nconst D = " + page_payload(data) + ";\n</script>\n")
+    (root / page).write_text("<title>t</title><script>\nconst D = " + page_payload(data) + ";\n</script>\n",
+                             encoding="utf-8")
     recordings = {k: {"projects": list(projects), "text_sha256": v.get("text_sha256", ""),
                       "token_count": v.get("token_count", 0)}
                   for k, v in data.get("transcript_index", {}).items()}

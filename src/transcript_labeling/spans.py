@@ -76,7 +76,7 @@ def reconcile_quote_reviews(answers: dict, page: Path, quote_rows: list[dict], *
                 continue
             previous = out["attribution"].get(quote["qid"], {})
             try:
-                transcript = json.loads(item_path(row["key"]).read_text())
+                transcript = json.loads(item_path(row["key"]).read_text(encoding="utf-8"))
                 result = review(quote, transcript, annotation)
             except (OSError, ValueError) as exc:
                 result = {"answer": None, "review_status": "stale", "review_error": str(exc)}
@@ -142,7 +142,7 @@ def import_spans(export: Path, page: Path, out: Path, *, item_path=None, speaker
     result = {}
     # Validate the entire batch before writing any output.
     for key, value in answers.get("spans", {}).items():
-        transcript = json.loads(item_path(key).read_text())
+        transcript = json.loads(item_path(key).read_text(encoding="utf-8"))
         validate_annotation(value, transcript, speakers)
         kinds = item_kinds(transcript)
         ranges = [{**s, "text": " ".join(transcript["tokens"][s["start"]:s["end"]]),

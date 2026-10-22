@@ -180,3 +180,27 @@ def test_reconcile_keeps_a_range_reviews_empty_legacy_answer(tmp_path, transcrip
     out = spans.reconcile_quote_reviews({'attribution': {'q1': prior}, 'spans': {'p/a': value}}, page, rows)
     assert out['attribution']['q1']['legacy_answer'] is None
     assert out['attribution']['q1']['answer'] == 'subject'
+
+
+def test_import_spans_reads_items_as_utf_8_under_a_latin_1_locale(tmp_path):
+    import os
+    import subprocess
+    import sys
+    code = ("import json, sys, pathlib\n"
+            "from transcript_labeling.spans import build_sidecar, import_spans\n"
+            "t = pathlib.Path(sys.argv[1])\n"
+            "side = build_sidecar('a', 'Caf\\u00e9 au lait', [])\n"
+            "(t / 'a.json').write_bytes(json.dumps(side, ensure_ascii=False).encode('utf-8'))\n"
+            "value = {'key': 'a', 'text_sha256': side['text_sha256'], 'token_count': side['token_count'],\n"
+            "         'checked_by': 'operator', 'ranges': [{'start': 0, 'end': 1, 'speaker': 'subject',\n"
+            "                                                'origin': 'human'}]}\n"
+            "(t / 'answers.json').write_text(json.dumps({'spans': {'a': value}}), encoding='utf-8')\n"
+            "out = import_spans(t / 'answers.json', t / 'p.html', t / 'out.json', item_path=lambda k: t / 'a.json')\n"
+            "import locale\n"
+            "print(locale.getencoding(), out['recordings']['a']['ranges'][0]['text'] == 'Caf\\u00e9')\n")
+    env = {**os.environ, "LC_ALL": "en_US.ISO8859-1", "PYTHONUTF8": "0", "PYTHONIOENCODING": "utf-8"}
+    out = subprocess.run([sys.executable, "-c", code, str(tmp_path)], env=env, capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr[-500:]
+    encoding, ok = out.stdout.split()[-2:]
+    assert encoding.replace("-", "").lower() != "utf8", "the child did not run under a non-UTF-8 locale"
+    assert ok == "True"

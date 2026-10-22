@@ -346,10 +346,10 @@ VERBATIM_FILE = (
 
 def test_a_v2_answers_file_comes_back_byte_identical(tmp_path):
     p = tmp_path / "human_answers.json"
-    p.write_text(VERBATIM_FILE)
+    p.write_text(VERBATIM_FILE, encoding="utf-8")
     store = answers_store(tmp_path)
     store.update(lambda a: a, store.load_versioned()[1])
-    assert p.read_text() == VERBATIM_FILE
+    assert p.read_text(encoding="utf-8") == VERBATIM_FILE
 
 
 def test_a_two_section_v2_file_gains_empty_spans_and_corrections(tmp_path):

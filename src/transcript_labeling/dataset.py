@@ -49,7 +49,7 @@ class Session:
         path = root / MANIFEST
         if not path.exists():
             raise SystemExit(f"REFUSING: {root} has no {MANIFEST}")
-        manifest = json.loads(path.read_text())
+        manifest = json.loads(path.read_text(encoding="utf-8"))
         problems = manifest_errors(manifest)
         if problems:
             raise SystemExit(f"REFUSING: {path}: " + "; ".join(problems))
@@ -83,7 +83,7 @@ class Session:
         return sidecar_path(self.page, key)
 
     def data(self) -> dict:
-        return page_data(self.page.read_text())
+        return page_data(self.page.read_text(encoding="utf-8"))
 
     def sections(self) -> set[str]:
         """The answers sections the page may write, from the session's modes."""
@@ -164,7 +164,7 @@ def guard_answers(answers_path: Path, rows: list, quote_rows: list, transcript_i
     before = {}
     if old_page.exists():
         before = {c["qid"]: (c.get("quote_start"), c.get("quote_end"))
-                  for r in page_data(old_page.read_text()).get("quote_rows", []) for c in r.get("quotes", [])}
+                  for r in page_data(old_page.read_text(encoding="utf-8")).get("quote_rows", []) for c in r.get("quotes", [])}
     shifted = []
     for r in quote_rows:
         for c in r["quotes"]:

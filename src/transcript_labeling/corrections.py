@@ -77,7 +77,7 @@ def export_corrections(answers: Path, page: Path, out: Path, *, item_path=None) 
     raw = read_json_object(answers)
     recordings = {}
     for key, value in raw.get("corrections", {}).items():
-        transcript = json.loads(item_path(key).read_text())
+        transcript = json.loads(item_path(key).read_text(encoding="utf-8"))
         text = corrected_text(transcript, value)
         recordings[key] = {**value, "corrected_text": text, "corrected_text_sha256": text_hash(text)}
     result = {"schema_version": 1, "recordings": recordings,

@@ -140,7 +140,7 @@ def make_handler(mounts: dict[str, Mounted]):
                 if key not in m.ids["spans"]:
                     return self._json(404, {"error": "recording is not on this page"})
                 try:
-                    payload = json.loads(m.session.sidecar(key).read_text())
+                    payload = json.loads(m.session.sidecar(key).read_text(encoding="utf-8"))
                 except (OSError, ValueError):
                     return self._json(409, {"error": "transcript unavailable; rebuild the page"})
                 return self._json(200, {**payload, "token_kinds": item_kinds(payload)})
@@ -177,7 +177,7 @@ def make_handler(mounts: dict[str, Mounted]):
             if not isinstance(value, dict):
                 return self._json(400, {"error": "value is not an object"})
             try:
-                transcript = json.loads(m.session.sidecar(ident).read_text()) if kind != "labels" else None
+                transcript = json.loads(m.session.sidecar(ident).read_text(encoding="utf-8")) if kind != "labels" else None
             except (OSError, ValueError) as exc:
                 return self._json(400, {"error": f"transcript unavailable: {exc}"})
             if kind == "spans":

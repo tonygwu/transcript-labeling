@@ -118,7 +118,7 @@ def flat(s: str) -> str:
 # ------------------------------------------------------------------ GOLDEN
 
 def test_the_page_rendered_here_equals_verbatims_byte_for_byte():
-    data = json.loads((FIX / "data.json").read_text())
+    data = json.loads((FIX / "data.json").read_text(encoding="utf-8"))
     got = V.render_page(data, "Annotations · alpha + beta", "Modes: checklist, speakers, captions. Saves as you go.")
     assert got.encode("utf-8") == (FIX / "page.html").read_bytes()
 
