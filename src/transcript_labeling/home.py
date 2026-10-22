@@ -118,6 +118,8 @@ class Home:
             raise SystemExit(f"REFUSING: {self.root} does not exist; run `tl init`") from None
         except NotADirectoryError:
             raise SystemExit(f"REFUSING: {self.root} cannot be a folder: part of its path is a file") from None
+        except OSError as e:  # a loop of symlinks, a folder it may not enter
+            raise SystemExit(f"REFUSING: {self.root} cannot be checked: {e.strerror}") from None
         if not stat.S_ISDIR(st.st_mode):
             raise SystemExit(f"REFUSING: {self.root} is not a folder")
         mode = stat.S_IMODE(st.st_mode)
@@ -144,20 +146,29 @@ class Home:
                              "outside every git checkout")
         made = []
         for d in (self.root, self.root / "data", self.root / "state", self.root / "exports", self.logs_dir):
-            if d.exists() and not d.is_dir():
-                raise SystemExit(f"REFUSING: {d} is a file, not a folder")
-            if not d.exists():
+            try:
+                if d.is_dir():
+                    continue
+                if d.exists():
+                    raise SystemExit(f"REFUSING: {d} is a file, not a folder")
+                d.mkdir(parents=True, mode=0o700)
+            except NotADirectoryError:
+                raise SystemExit(f"REFUSING: {d} cannot be made: part of its path is a file") from None
+            except FileExistsError:  # something is there now, or a symlink leads nowhere
                 try:
-                    d.mkdir(parents=True, mode=0o700)
-                except NotADirectoryError:
-                    raise SystemExit(f"REFUSING: {d} cannot be made: part of its path is a file") from None
-                except FileExistsError:
-                    if d.is_dir():
-                        continue  # another `tl init` made it first
+                    st = os.stat(d)
+                except FileNotFoundError:
                     raise SystemExit(f"REFUSING: {d} cannot be made: " + (
-                        "it is a symlink to a folder that does not exist" if d.is_symlink() else
+                        "it is a symlink to a folder that does not exist" if os.path.islink(d) else
                         "part of its path is a symlink that leads nowhere")) from None
-                made.append(str(d))
+                except OSError as e:  # a loop of symlinks
+                    raise SystemExit(f"REFUSING: {d} cannot be made: {e.strerror}") from None
+                if not stat.S_ISDIR(st.st_mode):  # a file appeared in between
+                    raise SystemExit(f"REFUSING: {d} is a file, not a folder") from None
+                continue  # another `tl init` made it first
+            except OSError as e:  # a loop of symlinks, a folder it may not enter or write
+                raise SystemExit(f"REFUSING: {d} cannot be made: {e.strerror}") from None
+            made.append(str(d))
         os.chmod(self.root, 0o700)
         if not self.config_path.exists():
             private_write(self.config_path, json.dumps(

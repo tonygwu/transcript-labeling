@@ -514,9 +514,54 @@ def test_init_racing_another_init_takes_the_folder_it_made(tmp_path, monkeypatch
             real_mkdir(self, mode=0o700)
         return real_mkdir(self, *a, **kw)
     monkeypatch.setattr(Path, "mkdir", other_init_first)
-    Home(home).init()
+    made = Home(home).init()
     monkeypatch.setattr(Path, "mkdir", real_mkdir)
     Home(home).require()
+    assert str(home) not in made and str(home / "data") in made
+
+
+def test_init_names_a_file_that_appears_while_it_works(tmp_path, monkeypatch):
+    from pathlib import Path
+    from transcript_labeling.home import Home
+    real_mkdir, home = Path.mkdir, tmp_path / "h"
+
+    def file_first(self, *a, **kw):  # another program writes a file there in between
+        if self == home / "data" and not self.exists():
+            self.write_text("x")
+        return real_mkdir(self, *a, **kw)
+    monkeypatch.setattr(Path, "mkdir", file_first)
+    with pytest.raises(SystemExit, match="h/data is a file, not a folder"):
+        Home(home).init()
+
+
+def test_a_loop_of_symlinks_is_named_not_raised(tmp_path):
+    import errno
+    import os
+    import re
+    from transcript_labeling.home import Home
+    loop = re.escape(os.strerror(errno.ELOOP))  # the C library's own words for it
+    (tmp_path / "loop").symlink_to(tmp_path / "loop")
+    for home in (tmp_path / "loop", tmp_path / "loop" / "h"):
+        with pytest.raises(SystemExit, match=re.escape(f"{home} cannot be made: ") + loop):
+            Home(home).init()
+    with pytest.raises(SystemExit, match=re.escape(f"{tmp_path / 'loop'} cannot be checked: ") + loop):
+        Home(tmp_path / "loop").require()
+    (tmp_path / "h").mkdir()
+    (tmp_path / "h" / "data").symlink_to(tmp_path / "h" / "data")
+    with pytest.raises(SystemExit, match="h/data cannot be made: " + loop):
+        Home(tmp_path / "h").init()
+
+
+def test_init_names_a_folder_it_may_not_enter(tmp_path):
+    import os
+    from transcript_labeling.home import Home
+    locked = tmp_path / "locked"
+    locked.mkdir(mode=0o000)
+    try:
+        with pytest.raises(SystemExit, match="locked/h cannot be made: Permission denied"):
+            Home(locked / "h").init()
+    finally:
+        os.chmod(locked, 0o700)
 
 
 def test_a_project_at_the_root_can_still_hold_datasets(reg, tmp_path):
