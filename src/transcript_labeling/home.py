@@ -96,8 +96,10 @@ class Home:
         """
         try:
             st = self.root.stat()
-        except (FileNotFoundError, NotADirectoryError):
+        except FileNotFoundError:
             raise SystemExit(f"REFUSING: {self.root} does not exist; run `tl init`") from None
+        except NotADirectoryError:
+            raise SystemExit(f"REFUSING: {self.root} cannot be a folder: part of its path is a file") from None
         if not stat.S_ISDIR(st.st_mode):
             raise SystemExit(f"REFUSING: {self.root} is not a folder")
         mode = stat.S_IMODE(st.st_mode)
@@ -113,7 +115,10 @@ class Home:
         made = []
         for d in (self.root, self.root / "data", self.root / "state", self.root / "exports", self.logs_dir):
             if not d.exists():
-                d.mkdir(parents=True, mode=0o700)
+                try:
+                    d.mkdir(parents=True, mode=0o700)
+                except (NotADirectoryError, FileExistsError):
+                    raise SystemExit(f"REFUSING: {d} cannot be made: part of its path is a file") from None
                 made.append(str(d))
         os.chmod(self.root, 0o700)
         if not self.config_path.exists():

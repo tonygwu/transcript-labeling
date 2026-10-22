@@ -16,7 +16,6 @@ project. It is not authentication: a caller can name any repository.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import json
 import os
 import re
@@ -25,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 from .home import Home
-from .store import read_json_object, write_atomic
+from .store import locked, read_json_object, write_atomic
 
 NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}")
 PRIVACY = ("local-only", "git-private")
@@ -78,14 +77,10 @@ class Registry:
         (0700) with its token, and a silently remade one would be neither.
         """
         self.home.require()
-        with open(self.home.root / "registry.lock", "a") as fh:
-            fcntl.flock(fh, fcntl.LOCK_EX)
+        with locked(self.home.root / "registry.lock", make_parents=False):
             # Again under the lock: the home may have gone while this call waited for it.
             self.home.require()
-            try:
-                yield
-            finally:
-                fcntl.flock(fh, fcntl.LOCK_UN)
+            yield
 
     def load(self) -> dict:
         path = self.home.registry_path

@@ -101,19 +101,42 @@ def write_atomic(path: str | Path, text: str, encoding: str = "utf-8", expect: t
 
 
 @contextlib.contextmanager
-def locked(path: Path):
+def locked(path: Path, make_parents: bool = True):
     """Hold an exclusive `flock` on `path` (created if missing) for the block.
 
     The lock lives on its own file, never on the file it protects: git and
     `os.replace` swap that file's inode, so a lock on it would protect nothing.
+    If the lock file is deleted or replaced while this call waits (its folder was
+    deleted and made again, say), the lock it got guards a file nobody else will
+    open, so it takes the lock on the new file instead, up to LOCK_TRIES times.
+    Without `make_parents`, a missing folder is refused instead of made.
     """
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)  # a state folder under $TL_HOME
-    with open(path, "a") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
+    for _ in range(LOCK_TRIES):
+        if make_parents:
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)  # a state folder under $TL_HOME
+        elif not path.parent.is_dir():
+            raise SystemExit(f"REFUSING: {path.parent} does not exist; run `tl init`")
+        fh = open(path, "a")
         try:
-            yield
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                now = os.stat(path)
+            except FileNotFoundError:
+                now = None
+            held = os.fstat(fh.fileno())
+            if now is not None and (now.st_ino, now.st_dev) == (held.st_ino, held.st_dev):
+                try:
+                    yield
+                finally:
+                    fcntl.flock(fh, fcntl.LOCK_UN)
+                return
         finally:
-            fcntl.flock(fh, fcntl.LOCK_UN)
+            fh.close()
+    raise SystemExit(f"REFUSING: {path} was replaced {LOCK_TRIES} times while waiting for its lock")
+
+
+#: How many times `locked` takes the lock again after finding its file replaced.
+LOCK_TRIES = 20
 
 
 def load_answers(path: Path) -> dict:

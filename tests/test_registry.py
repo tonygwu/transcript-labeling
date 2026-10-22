@@ -255,8 +255,10 @@ def test_a_home_open_to_the_group_or_not_a_folder_is_refused(reg, tmp_path):
     (tmp_path / "file").write_text("x")
     with pytest.raises(SystemExit, match="is not a folder"):
         Registry(Home(tmp_path / "file")).create_project("p", privacy="local-only", writers=["o/r"])
-    with pytest.raises(SystemExit, match="does not exist; run `tl init`"):
+    with pytest.raises(SystemExit, match="cannot be a folder: part of its path is a file"):
         Registry(Home(tmp_path / "file" / "h")).create_project("p", privacy="local-only", writers=["o/r"])
+    with pytest.raises(SystemExit, match="cannot be made: part of its path is a file"):
+        Home(tmp_path / "file" / "h").init()
 
 
 def test_a_home_deleted_while_a_call_waits_for_its_lock_is_refused(reg, monkeypatch):
@@ -266,9 +268,12 @@ def test_a_home_deleted_while_a_call_waits_for_its_lock_is_refused(reg, monkeypa
     auth = Auth(reg.home)
     real = fcntl.flock
 
-    def flock_then_delete(fd, op):  # another process deletes the home while this one waits
+    deleted = []
+
+    def flock_then_delete(fd, op):  # another process deletes the home once while this one waits
         real(fd, op)
-        if not op & fcntl.LOCK_UN:
+        if not op & fcntl.LOCK_UN and not deleted:
+            deleted.append(1)
             shutil.rmtree(reg.home.root, ignore_errors=True)
     monkeypatch.setattr(fcntl, "flock", flock_then_delete)
     with pytest.raises(SystemExit, match="does not exist; run `tl init`"):
@@ -277,9 +282,64 @@ def test_a_home_deleted_while_a_call_waits_for_its_lock_is_refused(reg, monkeypa
     monkeypatch.setattr(fcntl, "flock", real)
     reg.home.init()
     auth = Auth(reg.home)
+    deleted.clear()
     monkeypatch.setattr(fcntl, "flock", flock_then_delete)
     with pytest.raises(SystemExit, match="does not exist; run `tl init`"):
         auth.mint_code("/")
+    assert not reg.home.root.exists()  # the session lock did not make the home again
+
+
+def test_a_home_made_again_by_other_code_while_a_call_waits_is_refused_under_the_lock(reg, monkeypatch):
+    # Only the check after the lock can see this: the home comes back open to others
+    # and without its token (a dataset lock made its parents) while the call waits.
+    import fcntl
+    import shutil
+    from transcript_labeling.auth import Auth
+    auth = Auth(reg.home)
+    real, swapped = fcntl.flock, []
+
+    def flock_then_remake(fd, op):
+        real(fd, op)
+        if not op & fcntl.LOCK_UN and not swapped:
+            swapped.append(1)
+            shutil.rmtree(reg.home.root)
+            old = os.umask(0o022)
+            try:
+                reg.home.root.mkdir()
+            finally:
+                os.umask(old)
+    monkeypatch.setattr(fcntl, "flock", flock_then_remake)
+    with pytest.raises(SystemExit, match="mode 0o755, open to other users"):
+        reg.create_project("p", privacy="local-only", writers=["o/r"])
+    assert not reg.home.registry_path.exists()
+    monkeypatch.setattr(fcntl, "flock", real)
+    shutil.rmtree(reg.home.root)
+    reg.home.init()
+    auth = Auth(reg.home)
+    swapped.clear()
+    monkeypatch.setattr(fcntl, "flock", flock_then_remake)
+    with pytest.raises(SystemExit, match="mode 0o755, open to other users"):
+        auth.mint_code("/")
+    assert not reg.home.sessions_path.exists()
+
+
+def test_a_registry_lock_file_replaced_while_waiting_is_taken_again(reg, monkeypatch):
+    # The home was deleted and set up again by `tl init` while this call waited: the
+    # lock it got is on a file nobody else will open, so it must lock the new one.
+    import fcntl
+    real, calls = fcntl.flock, []
+    lock = reg.home.root / "registry.lock"
+
+    def flock_then_replace(fd, op):
+        real(fd, op)
+        if not op & fcntl.LOCK_UN:
+            calls.append(os.fstat(fd.fileno()).st_ino)
+            if len(calls) == 1:
+                lock.unlink()
+                lock.write_text("")
+    monkeypatch.setattr(fcntl, "flock", flock_then_replace)
+    reg.create_project("p", privacy="local-only", writers=["o/r"])
+    assert len(calls) == 2 and calls[1] == os.stat(lock).st_ino
 
 
 def test_state_folders_are_private(tmp_path):

@@ -402,3 +402,62 @@ def test_every_state_file_that_cannot_be_read_as_an_object_is_refused_by_name(tm
                   "conflict": "line 2 is not valid JSON", "deep": "line 2 is nested too deeply"}[bad]
     with pytest.raises(SystemExit, match=f"events.jsonl {expect_log}"):
         log.read()
+
+
+def test_a_lock_whose_file_was_replaced_while_waiting_is_taken_on_the_new_file(tmp_path, monkeypatch):
+    import fcntl
+    import os
+    from transcript_labeling import store
+    path = tmp_path / "state" / ".tl.lock"
+    real, calls = fcntl.flock, []
+
+    def flock_then_replace(fd, op):  # another process replaces the lock file once while this one waits
+        real(fd, op)
+        if not op & fcntl.LOCK_UN:
+            calls.append(os.fstat(fd.fileno()).st_ino)
+            if len(calls) == 1:
+                fresh = path.with_name("fresh")
+                fresh.write_text("")
+                os.replace(fresh, path)
+    monkeypatch.setattr(fcntl, "flock", flock_then_replace)
+    with store.locked(path):
+        assert len(calls) == 2 and calls[1] == os.stat(path).st_ino != calls[0]
+
+
+def test_a_lock_file_replaced_every_time_is_refused_after_a_cap(tmp_path, monkeypatch):
+    import fcntl
+    import os
+    from transcript_labeling import store
+    path = tmp_path / ".tl.lock"
+    real, calls = fcntl.flock, []
+
+    def flock_then_replace(fd, op):
+        real(fd, op)
+        if not op & fcntl.LOCK_UN:
+            calls.append(1)
+            fresh = path.with_name("fresh")
+            fresh.write_text("")
+            os.replace(fresh, path)
+    monkeypatch.setattr(fcntl, "flock", flock_then_replace)
+    with pytest.raises(SystemExit, match=f"was replaced {store.LOCK_TRIES} times"):
+        with store.locked(path):
+            pass
+    assert len(calls) == store.LOCK_TRIES
+
+
+def test_a_lock_whose_file_was_deleted_while_waiting_is_taken_on_a_new_file(tmp_path, monkeypatch):
+    import fcntl
+    import os
+    from transcript_labeling import store
+    path = tmp_path / "state" / ".tl.lock"
+    real, calls = fcntl.flock, []
+
+    def flock_then_delete(fd, op):  # another process deletes the lock file once while this one waits
+        real(fd, op)
+        if not op & fcntl.LOCK_UN:
+            calls.append(os.fstat(fd.fileno()).st_ino)
+            if len(calls) == 1:
+                path.unlink()
+    monkeypatch.setattr(fcntl, "flock", flock_then_delete)
+    with store.locked(path):
+        assert len(calls) == 2 and calls[1] == os.stat(path).st_ino

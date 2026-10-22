@@ -67,7 +67,7 @@ class Auth:
         # must not be remade by the lock below. Checked again under the lock, because
         # the home may have gone while this call waited for it.
         self.home.require()
-        with locked(self.home.root / "sessions.lock"):
+        with locked(self.home.root / "sessions.lock", make_parents=False):
             self.home.require()
             yield
 
