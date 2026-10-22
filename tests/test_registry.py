@@ -45,6 +45,22 @@ def test_a_readable_token_or_a_broken_config_is_refused(tmp_path):
         home.config()
 
 
+def test_a_token_that_is_not_a_utf_8_file_is_refused_by_name(tmp_path):
+    home = Home(tmp_path / "h")
+    home.init()
+    home.token_path.write_bytes(b"\xff" * 40)
+    with pytest.raises(SystemExit, match="token is not UTF-8 text"):
+        home.token()
+    home.token_path.unlink()
+    home.token_path.mkdir(mode=0o700)
+    with pytest.raises(SystemExit, match="token is not a file; move it aside and run `tl init`"):
+        home.token()
+    home.token_path.rmdir()
+    os.mkfifo(home.token_path, 0o600)  # reading a named pipe would wait for a writer forever
+    with pytest.raises(SystemExit, match="token is not a file"):
+        home.token()
+
+
 @pytest.fixture
 def reg(tmp_path):
     home = Home(tmp_path / "h")

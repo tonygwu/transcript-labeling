@@ -193,13 +193,25 @@ class Home:
         return cfg
 
     def token(self) -> str:
-        """The bearer token. A token file other users could read stops the caller."""
-        if not self.token_path.exists():
-            raise SystemExit(f"REFUSING: {self.token_path} does not exist; run `tl init`")
-        mode = stat.S_IMODE(self.token_path.stat().st_mode)
+        """The bearer token. A token file other users could read, or one that is not a
+        readable UTF-8 file, stops the caller with a refusal that names it."""
+        try:
+            st = self.token_path.stat()
+        except FileNotFoundError:
+            raise SystemExit(f"REFUSING: {self.token_path} does not exist; run `tl init`") from None
+        except OSError as e:  # a loop of symlinks, a folder it may not enter
+            raise SystemExit(f"REFUSING: {self.token_path} cannot be checked: {e.strerror}") from None
+        if not stat.S_ISREG(st.st_mode):  # `tl init` keeps whatever is there, so it must be moved first
+            raise SystemExit(f"REFUSING: {self.token_path} is not a file; move it aside and run `tl init`")
+        mode = stat.S_IMODE(st.st_mode)
         if mode & 0o077:
             raise SystemExit(f"REFUSING: {self.token_path} is mode {oct(mode)}; it must be 0600")
-        token = self.token_path.read_text(encoding="utf-8").strip()
+        try:
+            token = self.token_path.read_text(encoding="utf-8").strip()
+        except UnicodeDecodeError:
+            raise SystemExit(f"REFUSING: {self.token_path} is not UTF-8 text, so it holds no usable token") from None
+        except OSError as e:
+            raise SystemExit(f"REFUSING: {self.token_path} cannot be read: {e.strerror}") from None
         if len(token) < 32:
             raise SystemExit(f"REFUSING: {self.token_path} holds no usable token")
         return token
