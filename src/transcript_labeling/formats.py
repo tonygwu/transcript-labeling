@@ -10,7 +10,9 @@ offsets into the item. What changes per format is which tokens are speech:
               that opens with a label some cue opens with is another speaker in
               the same cue, and becomes its own segment with the cue's times. A
               later line that opens like a label no cue opens with is refused,
-              because crediting it to the speaker above would hide a speaker. The
+              because crediting it to the speaker above would hide a speaker, and
+              so is a later line that glues a cue's label to its words with no
+              space after the colon ("Ann Able:Yes"), in any letter case. The
               notes, every time line and every label are headers (the `meta`
               token kind): shown, never labelled.
   bracket-ts  verbatim-index captions: `[hh:mm:ss]` marks and `>>` turn marks inside
@@ -73,6 +75,19 @@ def _label(line: str) -> tuple[str, int] | None:
     return None
 
 
+def _loose(label: str) -> str:
+    """`label` without letter case and with its spacing collapsed."""
+    return " ".join(label.split()).casefold()
+
+
+def _glued(line: str, loose: set[str]) -> bool:
+    """Whether `line` starts with one of the `loose` labels and a colon with no space after it."""
+    line = re.sub(r"^[\s\ufeff]+", "", line)
+    colon = line.find(":")
+    after = line[colon + 1:colon + 2]
+    return colon > 0 and after != "" and not after.isspace() and _loose(line[:colon]) in loose
+
+
 def _zoom_notes(text: str) -> dict:
     toks = list(re.finditer(r"\S+", text))
     starts = [t.start() for t in toks]
@@ -120,9 +135,10 @@ def _zoom_notes(text: str) -> dict:
             raise SystemExit(f"REFUSING: the cue at line {timing_line + 1} has no text line")
         if _label(lines[body[0]][1]) is None:
             raise SystemExit(f"REFUSING: line {body[0] + 1} has no `Label:` speaker label; every zoom-notes cue "
-                             "starts with one")
+                             "starts with one, and its colon needs a space after it")
         cues.append((timing_line, m.groups(), body))
     known = {_label(lines[body[0]][1])[0] for _, _, body in cues}
+    loose = {_loose(k) for k in known}
     # Pass 2: segments. A later text line that starts with a label some cue opens with
     # is another speaker inside the same cue: its own segment, with the cue's times.
     meta, segments, labels = [], [], {}
@@ -136,8 +152,14 @@ def _zoom_notes(text: str) -> dict:
             lab = _label(lines[ln][1])
             if current is not None and lab is not None and lab[0] not in known:
                 raise SystemExit(f"REFUSING: line {ln + 1} starts like a speaker label that opens no cue, so its "
-                                 "words would be credited to the speaker above it; give that speaker a cue of "
-                                 "its own, or reword the line so it does not start with `Words:`")
+                                 "words would be credited to the speaker above it; a label must match a cue's "
+                                 "opening label exactly, letter case and spacing included. Give that speaker a "
+                                 "cue of its own, or reword the line so it does not start with `Words:`")
+            if current is not None and lab is None and _glued(lines[ln][1], loose):
+                # "Ann Able:Yes" is one whitespace token, so the label cannot be split off.
+                raise SystemExit(f"REFUSING: line {ln + 1} starts with a speaker label with no space after its "
+                                 "colon, so its words would be credited to the speaker above it; add a space "
+                                 "after the colon, or reword the line if it is speech")
             if current is None or (lab is not None and lab[0] in known):
                 current = {"line": ln, "label": lab[0], "colon": lab[1], "lines": [ln]}
                 groups.append(current)

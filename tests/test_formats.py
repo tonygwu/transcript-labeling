@@ -88,6 +88,16 @@ def test_a_cue_with_two_speakers_on_two_lines_becomes_two_segments_with_its_time
         [("Right, same time.", "bo"), ("Great, see you then.", "ann")]
 
 
+@pytest.mark.parametrize("line", ["Ann Able said yes", "Ann Ablex:yes", "Bo:Brand is fine", "Bo Brand!",
+                                  ":Bo Brand"])
+def test_a_later_line_that_only_begins_like_a_label_stays_with_its_speaker(line):
+    text = (f"00:00:01 --> 00:00:02\nAnn Able: Shall we sign today?\n{line}\n\n"
+            "00:00:03 --> 00:00:04\nBo Brand: Okay.\n")
+    segs = parse(text)["segments"]
+    assert [s["label"] for s in segs] == ["Ann Able", "Bo Brand"]
+    assert words(text, segs[0]["body"]) == "Shall we sign today? " + line
+
+
 def test_a_later_line_without_a_label_stays_with_its_speaker():
     text = ("00:00:01 --> 00:00:02\nAnn Able: first line\nmore words, at 10:30 or so\n\n"
             "00:00:03 --> 00:00:04\nBo Brand: ok\n")
@@ -106,7 +116,28 @@ def test_a_later_line_that_opens_like_an_unknown_label_is_refused(line):
         parse(text)
 
 
+@pytest.mark.parametrize("line, expect", [
+    ("Ann Able:Yes, today.", "line 3 starts with a speaker label with no space after its colon"),
+    ("  Bo Brand:no", "line 3 starts with a speaker label with no space after its colon"),
+    ("ann able: lower case", "must match a cue's opening label exactly, letter case and spacing included"),
+    ("Ann  Able: two spaces", "must match a cue's opening label exactly"),
+    ("ann able:yes", "no space after its colon"),
+    ("Ann  Able:yes", "no space after its colon"),
+    ("Ann Able :yes", "no space after its colon"),
+    ("\ufeffBo Brand:no", "no space after its colon"),
+    ("Ann Able:at 10:30", "no space after its colon"),  # the first colon decides
+])
+def test_a_later_line_whose_known_label_is_glued_or_respelled_is_refused(line, expect):
+    text = (f"00:00:01 --> 00:00:02\nAnn Able: Shall we sign today?\n{line}\n\n"
+            "00:00:03 --> 00:00:04\nBo Brand: Okay.\n")
+    with pytest.raises(SystemExit, match=expect):
+        parse(text)
+    ok = text.replace(line, "Ann Able: Yes, today.")
+    assert [s["label"] for s in parse(ok)["segments"]] == ["Ann Able", "Ann Able", "Bo Brand"]
+
+
 @pytest.mark.parametrize("text,expect", [
+    ("00:00:01 --> 00:00:02\nAnn Able:glued\n", "line 2 has no `Label:` .*needs a space after it"),
     ("00:00:01 --> 00:00:02\nno label here at all\n", "line 2 has no `Label:`"),
     ("00:00:01 --> 00:00:02\none two three four five six: words\n", "line 2 has no `Label:`"),
     ("00:00:01 --> 00:00:02\n10:30 we meet\n", "line 2 has no `Label:`"),
