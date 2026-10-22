@@ -96,13 +96,17 @@ def play_time(toks: list, a: int, duration=None, lead: int = PLAY_LEAD_SECONDS):
     return max(0, int(t) - lead)
 
 
+def clock_seconds(h, m, s) -> int:
+    """Seconds since 00:00:00 for an `hh:mm:ss` clock reading given as its three parts."""
+    return int(h) * 3600 + int(m) * 60 + int(s)
+
+
 def mark_seconds(token: str) -> int | None:
     """The seconds a `[hh:mm:ss]` mark token records, or None for any other token."""
     mark = MARK.fullmatch(token)
     if not mark:
         return None
-    h, m, s = map(int, mark.groups())
-    return h * 3600 + m * 60 + s
+    return clock_seconds(*mark.groups())
 
 
 def mark_times(tokens: list[str]) -> list[list[int]]:
