@@ -46,8 +46,8 @@ GITHUB_URL = re.compile(r"(?:git@github\.com:|ssh://git@github\.com/|https://(?:
 
 
 def redact(url: str) -> str:
-    """A URL without its `user:password@` part, for messages."""
-    return re.sub(r"(://)[^/@]*@", r"\1", url)
+    """A URL without its `user:password@` part, for messages; a password may itself hold `@`."""
+    return re.sub(r"(://)[^/]*@", r"\1", url)
 
 
 def github_slug(url: str) -> str | None:
@@ -86,6 +86,8 @@ def push_targets(checkout: Path, remotes: dict, git_bin: str = GIT) -> list[str]
     problems = []
     r = git(checkout, "config", "--get-regexp", r"^(remote\.pushdefault|branch\..*\.(pushremote|remote))$",
             check=False, git_bin=git_bin)
+    if r.returncode not in (0, 1):  # 1 means no such setting; anything else is a failure
+        raise CommitRefused(f"git config --get-regexp failed: {r.stderr.strip()[:300]}")
     for line in r.stdout.splitlines():
         key, _, value = line.partition(" ")
         if value != "." and value not in remotes:
@@ -128,10 +130,14 @@ def _check_checkout(checkout, visibility, git_bin):
                          "repository, or use a local-only project")
     bad = [f"{name} {redact(url)}: {vis}" for name, urls in sorted(remotes.items()) for url in urls
            if (vis := visibility(url)) != "PRIVATE"]
-    bad += push_targets(path, remotes, git_bin)
+    push = push_targets(path, remotes, git_bin)
+    parts = []
     if bad:
-        raise SystemExit("REFUSING: every remote of a git-private checkout must be a private repository; "
-                         + "; ".join(bad))
+        parts.append("every remote of a git-private checkout must be a private repository; " + "; ".join(bad))
+    if push:
+        parts.append("a plain git push must go only to those remotes; " + "; ".join(push))
+    if parts:
+        raise SystemExit("REFUSING: " + ". Also, ".join(parts))
     slugs = sorted({s for urls in remotes.values() for u in urls if (s := github_slug(u))})
     return path, slugs
 
@@ -139,6 +145,15 @@ def _check_checkout(checkout, visibility, git_bin):
 def create_git_project(registry: Registry, name: str, checkout: str | Path, *, creator_repo: str | None,
                        extra_writers: list[str] = (), branch: str | None = None, title: str = "",
                        visibility: Callable[[str], str] = gh_visibility, git_bin: str = GIT) -> dict:
+    try:
+        return _create_git_project(registry, name, checkout, creator_repo, extra_writers, branch, title,
+                                   visibility, git_bin)
+    except (CommitRefused, IndexLocked) as exc:  # a git failure or timeout is a refusal
+        raise SystemExit(f"REFUSING: {checkout}: {exc}")
+
+
+def _create_git_project(registry, name, checkout, creator_repo, extra_writers, branch, title, visibility,
+                        git_bin):
     path, slugs = check_checkout(checkout, visibility, git_bin)
     for other, entry in registry.load()["projects"].items():
         taken = entry.get("git", {}).get("checkout")

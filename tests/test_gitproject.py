@@ -14,8 +14,10 @@ import subprocess
 
 import pytest
 
+from transcript_labeling import gitcommit
 from transcript_labeling.gitcommit import MARKER
-from transcript_labeling.gitproject import check_checkout, create_git_project, gh_visibility, github_slug, own_repo
+from transcript_labeling.gitproject import (check_checkout, create_git_project, gh_visibility, github_slug, own_repo,
+                                            redact)
 from transcript_labeling.home import Home
 from transcript_labeling.registry import Registry
 
@@ -287,3 +289,47 @@ def test_a_sibling_whose_name_extends_another_checkout_is_not_an_overlap(registr
         git(r, "remote", "add", "origin", PRIVATE_URL)
     create_git_project(registry, "one", tmp_path / "data", creator_repo=None, visibility=private_only)
     assert create_git_project(registry, "two", tmp_path / "data2", creator_repo=None, visibility=private_only)
+
+
+def fake_git(tmp_path, body):
+    fake = tmp_path / "fakegit"
+    fake.write_text(f'#!/bin/sh\nfor a; do {body}; done\nexec /usr/bin/git "$@"\n')
+    fake.chmod(0o755)
+    return str(fake)
+
+
+def test_a_failure_reading_push_settings_is_a_refusal(registry, checkout, tmp_path):
+    git(checkout, "config", "branch.main.pushRemote", "/srv/public.git")
+    fake = fake_git(tmp_path, '[ "$a" = --get-regexp ] && { echo "fatal: bad config" >&2; exit 128; }')
+    with pytest.raises(SystemExit, match="git config --get-regexp failed: fatal: bad config"):
+        create_git_project(registry, "vi", checkout, creator_repo=None, visibility=private_only, git_bin=fake)
+
+
+@pytest.mark.parametrize("hang_on, branch", [("symbolic-ref", None), ("tl.syncLock", "main")])
+def test_a_hung_git_after_the_checks_is_a_refusal(registry, checkout, tmp_path, monkeypatch, hang_on, branch):
+    monkeypatch.setattr(gitcommit, "GIT_TIMEOUT_S", 1.0)
+    fake = fake_git(tmp_path, f'[ "$a" = {hang_on} ] && exec sleep 29')
+    with pytest.raises(SystemExit, match="REFUSING: .*ran longer than 1 s"):
+        create_git_project(registry, "vi", checkout, creator_repo=None, branch=branch, visibility=private_only,
+                           git_bin=fake)
+    assert registry.load()["projects"] == {}
+
+
+@pytest.mark.parametrize("url, shown", [
+    ("https://x:pa@ss@github.com/owner/code", "https://github.com/owner/code"),
+    ("https://tok@github.com/owner/a@b", "https://github.com/owner/a@b"),
+    ("ssh://u:p@host/x", "ssh://host/x"),
+    ("git@github.com:owner/code.git", "git@github.com:owner/code.git"),
+])
+def test_redact(url, shown):
+    assert redact(url) == shown
+
+
+def test_remote_and_push_problems_are_reported_under_their_own_headings(registry, checkout):
+    git(checkout, "remote", "add", "pub", "https://github.com/owner/code")
+    git(checkout, "config", "remote.pushDefault", "https://github.com/owner/code")
+    with pytest.raises(SystemExit) as exc:
+        create_git_project(registry, "vi", checkout, creator_repo=None, visibility=private_only)
+    msg = str(exc.value)
+    assert msg.startswith("REFUSING: every remote of a git-private checkout must be a private repository; pub ")
+    assert ". Also, a plain git push must go only to those remotes; remote.pushdefault " in msg
