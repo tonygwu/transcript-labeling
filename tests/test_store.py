@@ -516,3 +516,49 @@ def test_the_exporters_read_the_answers_file_strictly(tmp_path):
         import_spans(p, tmp_path / "page.html", tmp_path / "out.json")
     with pytest.raises(SystemExit, match="holds a key twice"):
         export_corrections(p, tmp_path / "page.html", tmp_path / "out.json")
+
+
+def _refused_within(seconds, call):
+    """The refusal `call` raises, failing (not hanging) if it is still running after `seconds`."""
+    out = {}
+
+    def run():
+        try:
+            call()
+            out["result"] = "returned"
+        except BaseException as exc:  # the test inspects whatever it raised
+            out["result"] = exc
+    t = _threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(seconds)
+    assert not t.is_alive(), f"still blocked after {seconds} s: a named pipe was opened"
+    return out["result"]
+
+
+def test_a_json_state_file_that_is_not_a_regular_file_is_refused_not_waited_on(tmp_path):
+    from transcript_labeling.home import Home
+    from transcript_labeling.store import read_json_object
+    home = Home(tmp_path / "h")
+    home.init()
+    home.config_path.unlink()
+    os.mkfifo(home.config_path, 0o600)  # reading a named pipe would wait for a writer forever
+    refused = _refused_within(5, home.config)
+    assert isinstance(refused, SystemExit) and "config.json is not a regular file" in str(refused)
+    home.config_path.unlink()
+    home.config_path.mkdir()
+    with pytest.raises(SystemExit, match="config.json is not a regular file"):
+        home.config()
+    with pytest.raises(FileNotFoundError):  # callers treat a missing file themselves
+        read_json_object(tmp_path / "missing.json")
+
+
+@pytest.mark.parametrize("kind", ["pipe", "folder"])
+def test_the_answers_and_review_stores_refuse_a_file_that_is_not_regular(tmp_path, kind):
+    answers, review = tmp_path / "human_answers.json", tmp_path / "review.json"
+    for p in (answers, review):
+        os.mkfifo(p, 0o600) if kind == "pipe" else p.mkdir()
+    lock = tmp_path / "state" / ".tl.lock"
+    for p, store in ((answers, DatasetStore(answers, lock)), (review, ReviewStore(review, lock))):
+        refused = _refused_within(5, store.load)
+        assert isinstance(refused, SystemExit) and f"{p.name} is not a regular file" in str(refused), refused
+

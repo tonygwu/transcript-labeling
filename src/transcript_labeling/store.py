@@ -16,6 +16,7 @@ import json
 import math
 import os
 import secrets
+import stat
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,10 +29,20 @@ class StaleWrite(Exception):
     """A save that would overwrite a change its page has not seen: the page must reload."""
 
 
+def regular_file_stat(path) -> os.stat_result:
+    """`path`'s stat, refusing anything but a regular file: reading a named pipe would
+    wait for a writer forever, and a folder cannot be read. A missing file still raises
+    FileNotFoundError."""
+    st = os.stat(path)
+    if not stat.S_ISREG(st.st_mode):
+        raise SystemExit(f"REFUSING: {path} is not a regular file")
+    return st
+
+
 def fingerprint(path: Path) -> tuple | None:
     """`(inode, size, mtime_ns, sha256)` of `path`, or None when it does not exist."""
     try:
-        st = os.stat(path)
+        st = regular_file_stat(path)
         data = Path(path).read_bytes()
     except FileNotFoundError:
         return None
@@ -83,8 +94,10 @@ def read_json_object(path: Path) -> dict:
     Refuses a file that is not UTF-8, is not JSON (a merge left conflict markers in
     it, say), holds a key twice in one object or NaN or Infinity, holds a number
     Python will not convert, is nested too deeply to parse, or holds something other
-    than an object. A missing file still raises FileNotFoundError.
+    than an object, and anything but a regular file: a named pipe would be waited on
+    forever. A missing file still raises FileNotFoundError.
     """
+    regular_file_stat(path)
     try:
         data = strict_loads(path.read_text(encoding="utf-8"))
     except _DuplicateKey:
