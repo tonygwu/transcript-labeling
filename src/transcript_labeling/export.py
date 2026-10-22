@@ -16,20 +16,28 @@ from .dataset import Session
 from .spans import import_spans
 from .store import load_answers
 
-KINDS = ("spans", "corrections", "labels")
-
 
 def label_docs(labels: dict) -> list[dict]:
-    """The answers file's labels as documents, each carrying its key."""
-    return [dict(v, key=v.get("key", k)) for k, v in labels.items() if isinstance(v, dict)]
+    """The answers file's labels as documents, each carrying its key.
+
+    A label that is not an object stops the caller: dropping it would report the
+    item as unlabelled, which is a quiet wrong answer.
+    """
+    bad = sorted(k for k, v in labels.items() if not isinstance(v, dict))
+    if bad:
+        raise SystemExit(f"REFUSING: {len(bad)} labels are not objects, e.g. {bad[:3]}")
+    return [dict(v, key=v.get("key", k)) for k, v in labels.items()]
 
 
 def export_labels(session: Session) -> dict:
     """Complete checklist answers, computed in memory. A session without a checklist stops the caller."""
+    if "checklist" not in session.modes:
+        raise SystemExit(f"REFUSING: session {session.name} has no checklist mode")
     data = session.data()
     checklist = (data.get("session") or {}).get("checklist")
-    if "checklist" not in session.modes or not checklist:
-        raise SystemExit(f"REFUSING: session {session.name} has no checklist mode")
+    if not checklist:
+        raise SystemExit(f"REFUSING: session {session.name} is in checklist mode, but its page carries no checklist "
+                         "spec; rebuild the page")
     answers = load_answers(session.answers)
     return to_labels(label_docs(answers["labels"]), {r["key"] for r in data.get("rows", [])}, checklist)
 

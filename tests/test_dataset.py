@@ -127,3 +127,17 @@ def test_guard_without_an_old_page_refuses_a_result_the_new_page_would_change(qu
 
 def test_guard_with_no_answers_file_passes(tmp_path, quote_session):
     guard_answers(**guard_args(quote_session, answers_path=tmp_path / "none.json", quote_rows=[]))
+
+
+@pytest.mark.parametrize("change,expect", [
+    (lambda m: m.update(projects=[["a"]]), "non-empty list of names"),
+    (lambda m: m.update(files=None), "files must be an object"),
+    (lambda m: m.update(recordings={"a/b": None}), "recordings must be an object of objects"),
+    (lambda m: m.update(modes=[["a"]]), "subset of"),
+    (lambda m: m.update(modes=5), "subset of"),
+    (lambda m: m["recordings"]["a/b"].update(projects=[["x"]]), "outside the session's"),
+])
+def test_malformed_parts_are_named_never_a_crash(change, expect):
+    m = copy.deepcopy(GOOD)
+    change(m)
+    assert any(expect in e for e in manifest_errors(m)), manifest_errors(m)

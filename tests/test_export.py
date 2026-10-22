@@ -49,6 +49,17 @@ def test_labels_export_refuses_a_session_without_a_checklist(quote_session):
         export_labels(quote_session)
 
 
+def test_labels_export_names_a_checklist_session_whose_page_lacks_the_spec(tmp_path):
+    s = write_session(tmp_path / "s", {"rows": [{"key": "a/x"}], "transcript_index": {}}, modes=("checklist",))
+    with pytest.raises(SystemExit, match="carries no checklist spec"):
+        export_labels(s)
+
+
+def test_a_label_that_is_not_an_object_stops_the_export():
+    with pytest.raises(SystemExit, match="not objects"):
+        label_docs({"a/x": {"present": True}, "a/y": 3})
+
+
 def test_label_docs_carry_their_key_and_a_stored_key_wins():
     assert label_docs({"a/x": {"present": True}}) == [{"present": True, "key": "a/x"}]
     assert label_docs({"a/x": {"key": "a/y"}}) == [{"key": "a/y"}]

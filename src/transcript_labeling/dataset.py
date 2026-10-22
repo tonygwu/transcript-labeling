@@ -99,16 +99,27 @@ def manifest_errors(manifest: dict) -> list[str]:
         errs.append(f"schema_version {manifest['schema_version']!r} / tool {manifest['tool']!r} is not "
                     f"{SCHEMA_VERSION} / 'annotations'")
     projects = manifest["projects"]
-    if not isinstance(projects, list) or not projects or not all(isinstance(p, str) and p for p in projects):
+    projects_ok = isinstance(projects, list) and projects and all(isinstance(p, str) and p for p in projects)
+    if not projects_ok:
         errs.append(f"projects {projects!r} must be a non-empty list of names")
-    if not manifest["modes"] or set(manifest["modes"]) - set(MODES):
-        errs.append(f"modes {manifest['modes']} must be a non-empty subset of {list(MODES)}")
-    errs += [f"files has no `{k}`" for k in REQUIRED_FILES if not manifest["files"].get(k)]
-    for key, rec in manifest["recordings"].items():
-        if set(rec.get("projects") or []) - set(projects if isinstance(projects, list) else []) \
-                or not rec.get("projects"):
-            errs.append(f"recording {key} has projects {rec.get('projects')} outside the session's")
-            break
+    modes = manifest["modes"]
+    if not isinstance(modes, list) or not modes or not all(isinstance(m, str) for m in modes) \
+            or set(modes) - set(MODES):
+        errs.append(f"modes {modes!r} must be a non-empty subset of {list(MODES)}")
+    if not isinstance(manifest["files"], dict):
+        errs.append("files must be an object")
+    else:
+        errs += [f"files has no `{k}`" for k in REQUIRED_FILES if not manifest["files"].get(k)]
+    recordings = manifest["recordings"]
+    if not isinstance(recordings, dict) or not all(isinstance(r, dict) for r in recordings.values()):
+        errs.append("recordings must be an object of objects")
+    elif projects_ok:
+        for key, rec in recordings.items():
+            tags = rec.get("projects")
+            if not isinstance(tags, list) or not tags or not all(isinstance(t, str) for t in tags) \
+                    or set(tags) - set(projects):
+                errs.append(f"recording {key} has projects {tags} outside the session's")
+                break
     return errs
 
 
