@@ -6,9 +6,8 @@ MCP server cannot. Before the registry entry is written:
   checkout   an absolute path to the top level of a git work tree, stored resolved.
              A checkout that is, contains, or sits inside another project's checkout
              is refused, so two projects do not own overlapping dataset folders.
-             This check reads the registry before `create_project` takes its lock,
-             so two creates racing on one checkout could both pass; creation is
-             owner-run from the CLI.
+             `Registry.create_project` checks this under the registry lock,
+             comparing folder names as the Mac's filesystem does.
   remotes    every fetch and push URL of every remote, after `insteadOf` and
              `pushInsteadOf` rewriting, must be a repository that
              `gh repo view github.com/<owner>/<repo> --json visibility` reports
@@ -155,11 +154,6 @@ def create_git_project(registry: Registry, name: str, checkout: str | Path, *, c
 def _create_git_project(registry, name, checkout, creator_repo, extra_writers, branch, title, visibility,
                         git_bin):
     path, slugs = check_checkout(checkout, visibility, git_bin)
-    for other, entry in registry.load()["projects"].items():
-        taken = entry.get("git", {}).get("checkout")
-        if taken and (path.is_relative_to(taken) or Path(taken).is_relative_to(path)):
-            raise SystemExit(f"REFUSING: {path} overlaps the checkout {taken} of project {other!r}; "
-                             "add datasets there")
     if branch is None:
         r = git(path, "symbolic-ref", "--quiet", "--short", "HEAD", check=False, git_bin=git_bin)
         if r.returncode != 0 or not r.stdout.strip():

@@ -84,6 +84,21 @@ def test_git_private_datasets_need_a_relative_path_inside_the_checkout(reg, tmp_
     assert reg.add_dataset("vi", "talk-2", "logs/talk-2").name == "talk-2"
 
 
+def put_git_project(reg, name, checkout):
+    """Write a git-private project straight into the registry, as a hand edit would.
+
+    create_project refuses a checkout that overlaps another project's, so this is the
+    only way two such projects exist; add_dataset must still keep their datasets apart.
+    """
+    with reg.locked():
+        r = reg.load()
+        r["projects"][name] = {"title": name, "privacy": "git-private", "writers": ["o/data"],
+                               "created_at": "2026-01-01T00:00:00+00:00", "datasets": {},
+                               "git": {"checkout": str(checkout), "branch": "main", "commit": False,
+                                       "idle_s": 300, "max_age_s": 1800}}
+        reg._save(r)
+
+
 def test_dataset_paths_cannot_nest_by_letter_case_or_across_projects_on_one_checkout(reg, tmp_path):
     (tmp_path / "co").mkdir()
     git = {"checkout": str(tmp_path / "co"), "branch": "main", "commit": False}
@@ -97,8 +112,7 @@ def test_dataset_paths_cannot_nest_by_letter_case_or_across_projects_on_one_chec
             reg.add_dataset("vi", "x", inside)
     # A second project on the same checkout, named through a symlink to it.
     (tmp_path / "link").symlink_to(tmp_path / "co")
-    reg.create_project("vi2", privacy="git-private", writers=["o/data"],
-                       git={**git, "checkout": str(tmp_path / "link")})
+    put_git_project(reg, "vi2", tmp_path / "link")
     for overlap in ("logs", "logs/a/items", "Logs/A"):
         with pytest.raises(SystemExit, match="would overlap dataset vi/talk-1"):
             reg.add_dataset("vi2", "y", overlap)
@@ -157,17 +171,15 @@ def test_nested_checkouts_and_the_service_home_are_compared_by_real_folder(reg, 
     git = {"branch": "main", "commit": False}
     reg.create_project("p1", privacy="git-private", writers=["o/data"], git={**git, "checkout": str(co)})
     reg.add_dataset("p1", "a", "logs/a")
-    reg.create_project("p2", privacy="git-private", writers=["o/data"], git={**git, "checkout": str(co / "logs")})
+    put_git_project(reg, "p2", co / "logs")
     with pytest.raises(SystemExit, match="would overlap dataset p1/a"):
         reg.add_dataset("p2", "b", "a/items")
     assert reg.add_dataset("p2", "c", "c").name == "c"
-    reg.create_project("p3", privacy="git-private", writers=["o/data"],
-                       git={**git, "checkout": str(reg.home.root)})
+    put_git_project(reg, "p3", reg.home.root)
     for path in ("state", "data/loc/ds", "logs"):
         with pytest.raises(SystemExit):
             reg.add_dataset("p3", "d", path)
-    reg.create_project("p4", privacy="git-private", writers=["o/data"],
-                       git={**git, "checkout": str(reg.home.root.parent)})
+    put_git_project(reg, "p4", reg.home.root.parent)
     with pytest.raises(SystemExit, match="overlaps the service's home"):
         reg.add_dataset("p4", "e", reg.home.root.name)
 
@@ -374,3 +386,42 @@ def test_a_folder_reached_through_another_spelling_of_the_checkout_is_refused(re
         with pytest.raises(SystemExit, match="spells .* differently"):
             reg.add_dataset("vi", "d", via)
     assert reg.add_dataset("vi", "d", "logs/d").name == "d"
+
+
+def test_create_project_refuses_a_checkout_that_overlaps_another_projects(reg, tmp_path):
+    # The check runs under the registry lock, so two creates racing on one checkout
+    # cannot both pass; it used to run before the lock, in the CLI's project creation.
+    import unicodedata
+    co = tmp_path / unicodedata.normalize("NFC", "Café")
+    (co / "inner").mkdir(parents=True)
+    (tmp_path / "link").symlink_to(co)
+    git = {"branch": "main", "commit": False}
+    reg.create_project("vi", privacy="git-private", writers=["o/data"], git={**git, "checkout": str(co)})
+    for overlap in (co, tmp_path / "link", co / "inner", tmp_path,
+                    tmp_path / unicodedata.normalize("NFD", "café")):  # other case and Unicode form
+        with pytest.raises(SystemExit, match="overlaps the checkout .* of project 'vi'"):
+            reg.create_project("vi2", privacy="git-private", writers=["o/data"],
+                               git={**git, "checkout": str(overlap)})
+    assert sorted(reg.load()["projects"]) == ["vi"]
+    assert reg.create_project("other", privacy="git-private", writers=["o/data"],
+                              git={**git, "checkout": str(tmp_path / "Caféx")})
+
+
+def test_a_rival_create_just_before_the_lock_is_seen_under_it(reg, tmp_path, monkeypatch):
+    # The race the lock closes: another create on the same checkout lands between this
+    # call's start and its lock. A check made before the lock would let both through.
+    co = tmp_path / "co"
+    co.mkdir()
+    git = {"checkout": str(co), "branch": "main", "commit": False}
+    real, fired = Registry.locked, []
+
+    def rival_first(self):
+        if not fired:
+            fired.append(1)
+            real_create(self, "rival", privacy="git-private", writers=["o/data"], git=git)
+        return real(self)
+    real_create = Registry.create_project
+    monkeypatch.setattr(Registry, "locked", rival_first)
+    with pytest.raises(SystemExit, match="overlaps the checkout .* of project 'rival'"):
+        reg.create_project("mine", privacy="git-private", writers=["o/data"], git=git)
+    assert sorted(reg.load()["projects"]) == ["rival"]

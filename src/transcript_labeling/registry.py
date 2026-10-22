@@ -118,6 +118,15 @@ class Registry:
             reg = self.load()
             if name in reg["projects"]:
                 raise SystemExit(f"REFUSING: project {name!r} already exists")
+            if git is not None:
+                # Under the lock, so two creates racing on one checkout cannot both pass,
+                # and by real folder compared as the filesystem compares names.
+                folder = os.path.realpath(git["checkout"])
+                for other, other_entry in reg["projects"].items():
+                    taken = other_entry.get("git", {}).get("checkout")
+                    if taken and nests(folder, os.path.realpath(taken)):
+                        raise SystemExit(f"REFUSING: {git['checkout']} overlaps the checkout {taken} of project "
+                                         f"{other!r}; add datasets there")
             entry = {"title": title or name, "privacy": privacy, "writers": sorted(set(writers)),
                      "created_at": now or datetime.now(timezone.utc).isoformat(timespec="seconds"),
                      **({"git": git} if git else {}), "datasets": {}}
