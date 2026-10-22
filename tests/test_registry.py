@@ -84,6 +84,31 @@ def test_git_private_datasets_need_a_relative_path_inside_the_checkout(reg, tmp_
     assert reg.add_dataset("vi", "talk-2", "logs/talk-2").name == "talk-2"
 
 
+def test_dataset_paths_cannot_nest_by_letter_case_or_across_projects_on_one_checkout(reg, tmp_path):
+    (tmp_path / "co").mkdir()
+    git = {"checkout": str(tmp_path / "co"), "branch": "main", "commit": False}
+    reg.create_project("vi", privacy="git-private", writers=["o/data"], git=git)
+    reg.add_dataset("vi", "talk-1", "logs/a")
+    for overlap in ("Logs/A", "logs/A/items", "LOGS"):
+        with pytest.raises(SystemExit, match="would overlap dataset vi/talk-1"):
+            reg.add_dataset("vi", "x", overlap)
+    for inside in (".GIT/hooks", "sub/.Git/x"):
+        with pytest.raises(SystemExit, match="inside .git"):
+            reg.add_dataset("vi", "x", inside)
+    # A second project on the same checkout, named through a symlink to it.
+    (tmp_path / "link").symlink_to(tmp_path / "co")
+    reg.create_project("vi2", privacy="git-private", writers=["o/data"],
+                       git={**git, "checkout": str(tmp_path / "link")})
+    for overlap in ("logs", "logs/a/items", "Logs/A"):
+        with pytest.raises(SystemExit, match="would overlap dataset vi/talk-1"):
+            reg.add_dataset("vi2", "y", overlap)
+    assert reg.add_dataset("vi2", "y", "logs/b").name == "b"
+    # Projects on different folders never collide.
+    reg.create_project("other", privacy="git-private", writers=["o/data"],
+                       git={**git, "checkout": str(tmp_path / "elsewhere")})
+    assert reg.add_dataset("other", "z", "logs/a").name == "a"
+
+
 @pytest.mark.parametrize("kwargs,expect", [
     (dict(name="Bad Name", privacy="local-only", writers=["r"]), "must match"),
     (dict(name="ok", privacy="public", writers=["r"]), "privacy"),
@@ -113,3 +138,59 @@ def test_a_registry_of_another_version_is_refused(reg):
     reg.home.registry_path.write_text(json.dumps({"schema_version": 9, "projects": {}}))
     with pytest.raises(SystemExit, match="not a version-1 registry"):
         reg.load()
+
+
+def test_one_name_written_two_ways_is_one_folder(reg, tmp_path):
+    (tmp_path / "co").mkdir()
+    reg.create_project("vi", privacy="git-private", writers=["o/data"],
+                       git={"checkout": str(tmp_path / "co"), "branch": "main", "commit": False})
+    reg.add_dataset("vi", "a", "logs/café")  # é as one character
+    for overlap in ("logs/café/items", "logs/CAFÉ"):  # e plus a combining accent
+        with pytest.raises(SystemExit, match="would overlap dataset vi/a"):
+            reg.add_dataset("vi", "b", overlap)
+
+
+def test_nested_checkouts_and_the_service_home_are_compared_by_real_folder(reg, tmp_path):
+    co = tmp_path / "co"
+    (co / "logs").mkdir(parents=True)
+    git = {"branch": "main", "commit": False}
+    reg.create_project("p1", privacy="git-private", writers=["o/data"], git={**git, "checkout": str(co)})
+    reg.add_dataset("p1", "a", "logs/a")
+    reg.create_project("p2", privacy="git-private", writers=["o/data"], git={**git, "checkout": str(co / "logs")})
+    with pytest.raises(SystemExit, match="would overlap dataset p1/a"):
+        reg.add_dataset("p2", "b", "a/items")
+    assert reg.add_dataset("p2", "c", "c").name == "c"
+    reg.create_project("p3", privacy="git-private", writers=["o/data"],
+                       git={**git, "checkout": str(reg.home.root)})
+    for path in ("state", "data/loc/ds", "logs"):
+        with pytest.raises(SystemExit):
+            reg.add_dataset("p3", "d", path)
+    reg.create_project("p4", privacy="git-private", writers=["o/data"],
+                       git={**git, "checkout": str(reg.home.root.parent)})
+    with pytest.raises(SystemExit, match="overlaps the service's home"):
+        reg.add_dataset("p4", "e", reg.home.root.name)
+
+
+def test_a_symlink_inside_the_checkout_cannot_lead_around_the_guards(reg, tmp_path):
+    co = tmp_path / "co"
+    (co / "logs" / "a").mkdir(parents=True)
+    (co / ".git").mkdir()
+    (tmp_path / "outside").mkdir()
+    (co / "alias").symlink_to(co / "logs" / "a")
+    (co / "g").symlink_to(co / ".git")
+    (co / "out").symlink_to(tmp_path / "outside")
+    reg.create_project("vi", privacy="git-private", writers=["o/data"],
+                       git={"checkout": str(co), "branch": "main", "commit": False})
+    reg.add_dataset("vi", "a", "logs/a")
+    with pytest.raises(SystemExit, match="would overlap dataset vi/a"):
+        reg.add_dataset("vi", "b", "alias/items")
+    with pytest.raises(SystemExit, match="into .git through a symlink"):
+        reg.add_dataset("vi", "c", "g/hooks")
+    with pytest.raises(SystemExit, match="out of .* through a symlink"):
+        reg.add_dataset("vi", "d", "out/x")
+    (co / "here").symlink_to(".")
+    (co / "up").symlink_to("..")
+    for whole in ("here", "up"):  # the checkout itself, or its parent
+        with pytest.raises(SystemExit, match="out of .* through a symlink"):
+            reg.add_dataset("vi", "e", whole)
+    assert reg.add_dataset("vi", "f", "here/f").name == "f"  # resolves to a folder inside the checkout

@@ -18,7 +18,9 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
+import os
 import re
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
@@ -43,14 +45,21 @@ def check_relpath(rel: str) -> str:
     p = PurePosixPath(rel) if isinstance(rel, str) else None
     if not rel or p is None or p.is_absolute() or any(part in ("", ".", "..") for part in rel.split("/")):
         raise SystemExit(f"REFUSING: dataset path {rel!r} must be relative to the project folder, without `..`")
-    if ".git" in rel.split("/"):
+    if ".git" in name_key(rel).split("/"):  # .GIT is the same folder on the Mac's filesystem
         raise SystemExit(f"REFUSING: dataset path {rel!r} is inside .git")
     return str(p)
 
 
+def name_key(path: str) -> str:
+    """`path` as the Mac's default filesystem (APFS) compares names: without letter case,
+    and with é written as one character or as e plus an accent counted as the same.
+    On a case-sensitive filesystem this makes the checks refuse a little more."""
+    return unicodedata.normalize("NFD", unicodedata.normalize("NFD", path).casefold())
+
+
 def nests(a: str, b: str) -> bool:
     """Whether one dataset folder would sit inside the other (or be the same folder)."""
-    pa, pb = a.split("/"), b.split("/")
+    pa, pb = name_key(a).split("/"), name_key(b).split("/")
     n = min(len(pa), len(pb))
     return pa[:n] == pb[:n]
 
@@ -137,12 +146,32 @@ class Registry:
             elif rel is None:
                 raise SystemExit("REFUSING: a git-private dataset needs --path, its folder inside the checkout")
             rel = check_relpath(rel)
-            for other, path in entry["datasets"].items():
-                if nests(rel, path):
-                    raise SystemExit(f"REFUSING: {rel} would overlap dataset {project}/{other} at {path}")
+            root = self._root_of(project, entry)
+            # The real folder, so a symlink inside the checkout cannot lead out of it,
+            # into .git, or onto another dataset.
+            folder = os.path.realpath(root / rel)
+            if not nests(str(root), folder) or len(name_key(folder)) <= len(name_key(str(root))):
+                raise SystemExit(f"REFUSING: dataset path {rel!r} leads out of {root} through a symlink")
+            if ".git" in name_key(folder[len(str(root)):]).split("/"):
+                raise SystemExit(f"REFUSING: dataset path {rel!r} leads into .git through a symlink")
+            if entry["privacy"] == "git-private" and nests(folder, os.path.realpath(self.home.root)):
+                raise SystemExit(f"REFUSING: dataset path {rel!r} overlaps the service's home {self.home.root}")
+            # Every dataset of every project, compared by real folder: two git-private
+            # projects may name one checkout, or one checkout inside another.
+            for other_project, other_entry in reg["projects"].items():
+                other_root = self._root_of(other_project, other_entry)
+                for other, path in other_entry["datasets"].items():
+                    if nests(folder, os.path.realpath(other_root / path)):
+                        raise SystemExit(f"REFUSING: {rel} would overlap dataset {other_project}/{other} at {path}")
             entry["datasets"][dataset] = rel
             self._save(reg)
         return self.dataset_dir(project, dataset)
+
+    def _root_of(self, name: str, entry: dict) -> Path:
+        """A project's folder, resolved, so two spellings of one checkout compare equal."""
+        if entry["privacy"] == "git-private":
+            return Path(os.path.realpath(entry["git"]["checkout"]))
+        return Path(os.path.realpath(self.home.data_dir(name)))
 
     def dataset_dir(self, project: str, dataset: str) -> Path:
         p = self.project(project)
