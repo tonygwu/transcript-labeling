@@ -28,6 +28,8 @@ uv run pytest
 ```
 
 Run the gate before every commit and quote its output in the commit's review.
+The page tests run the page's script under `node`, so the gate needs `node` on
+PATH; without it those tests fail with the install command, never skip.
 `.python-version` pins 3.12, the oldest version the package supports and the one
 verbatim-index runs, so the gate catches code that only works on a newer Python.
 
