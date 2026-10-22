@@ -458,3 +458,17 @@ def test_init_refuses_a_home_inside_a_git_work_tree(tmp_path):
         assert not home.exists() or home == tmp_path / "repo"
     assert Home(tmp_path / "plain" / "h").init()
     assert Home(tmp_path / "repo" / ".." / "plain2" / "h").init()  # leaves the tree through ..
+
+
+def test_a_home_that_comes_to_sit_inside_a_work_tree_is_refused_on_use(tmp_path):
+    from transcript_labeling.auth import Auth
+    from transcript_labeling.home import Home
+    reg = Registry(Home(tmp_path / "parent" / "h"))
+    reg.home.init()
+    auth = Auth(reg.home)
+    (tmp_path / "parent" / ".git").mkdir()  # a `git init` in a parent folder, after tl init
+    with pytest.raises(SystemExit, match="is inside the git work tree"):
+        reg.create_project("p", privacy="local-only", writers=["o/r"])
+    with pytest.raises(SystemExit, match="is inside the git work tree"):
+        auth.mint_code("/")
+    assert not reg.home.registry_path.exists()

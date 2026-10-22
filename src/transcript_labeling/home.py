@@ -105,7 +105,8 @@ class Home:
 
     def require(self) -> None:
         """Refuse a home that `tl init` did not make: missing, not a folder, open to its
-        group or to others, or without its token.
+        group or to others, or without its token. Also refuse one that has come to sit
+        inside a git work tree since (a `git init` in a parent folder), as init would.
 
         Checking only that the folder exists is not enough. Code that makes missing
         parent folders (a lock, a log) would make a deleted home again, with the default
@@ -125,6 +126,10 @@ class Home:
                              f"0700. If it was deleted and made again, run `tl init`")
         if not self.token_path.is_file():
             raise SystemExit(f"REFUSING: {self.root} has no token; run `tl init`")
+        tree = git_work_tree_above(self.root)
+        if tree is not None:
+            raise SystemExit(f"REFUSING: {self.root} is inside the git work tree {tree}; move the service home "
+                             "outside every git checkout")
 
     # ------------------------------------------------------------ setup
     def init(self, port: int = DEFAULT_PORT, operator_id: str = "operator") -> list[str]:
