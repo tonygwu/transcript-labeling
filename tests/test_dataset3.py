@@ -156,7 +156,9 @@ def test_a_checklist_shaped_like_verbatims_is_accepted_unchanged():
          "differs_only_if": "present", "prompt": "Pick one.",
          "options": [{"value": v, "label": v, "key": str(i + 3), "help": "h"} for i, v in enumerate(["talk", "panel"])]},
         goal={"count": 5, "help": "recordings verified so far"}, accept_when_true=["present"],
-        notes_placeholder="anything odd")
+        notes_placeholder="anything odd",
+        # verbatim's draft also lists a field no question asks (main_speaker), so names are not matched
+        draft_fields=[["present", "subject present"], ["main_speaker", "main speaker"], ["venue", "format"]])
     assert normalize_config(cfg)["checklist"] == cfg["checklist"]
 
 
@@ -210,6 +212,23 @@ def test_the_checklist_goal_and_acceptance_the_page_reads_are_checked(extra, exp
     enum = {"name": "pick", "label": "Pick", "type": "enum", "options": opts(1, 2)}
     with pytest.raises(SystemExit, match="needs `accept_when_true`"):  # an enum field is never true
         normalize_config(checklist_config(BOOL, enum, accept_when_true=["pick"]))
+
+
+@pytest.mark.parametrize("extra, expect", [
+    ({"draft_fields": "present"}, "`draft_fields` must be a list of"),
+    ({"draft_fields": [["ok"]]}, "`draft_fields` must be a list of"),
+    ({"draft_fields": [["ok", 1]]}, "`draft_fields` must be a list of"),
+    ({"draft_fields": [["", "OK"]]}, "`draft_fields` must be a list of"),
+    ({"draft_fields": [{"ok": "OK", "no": "No"}]}, "`draft_fields` must be a list of"),  # two keys, as a pair
+    ({"draft_fields": None}, "`draft_fields` must be a list of"),
+])
+def test_the_draft_fields_the_page_shows_are_checked(extra, expect):
+    with pytest.raises(SystemExit, match=expect):
+        normalize_config(checklist_config(BOOL, **extra))
+    with pytest.raises(SystemExit, match="'ok': `draft_label` must be a string"):
+        normalize_config(checklist_config({**BOOL, "draft_label": ["ok"]}))
+    assert "draft_fields" not in normalize_config(checklist_config(BOOL))["checklist"]  # optional
+    assert normalize_config(checklist_config(BOOL, draft_fields=[]))["checklist"]["draft_fields"] == []
 
 
 def test_checklist_names_and_keys_are_unique_across_fields_and_there_is_one_field():

@@ -139,10 +139,11 @@ def checklist_errors(checklist: dict, taken: set[str]) -> None:
     """Refuse a checklist the page or the labels export could not use.
 
     Checks what they read: `goal` ({count, help}) and `accept_when_true` (bool field
-    names), and each field's `name`, `label`, `type`, `required` and options, each
-    option with a value, a label and a one-character key. Other keys (help text,
-    draft labels) pass through. Not yet checked: `draft_fields`, which the page reads
-    when an item carries a model draft. `taken` holds the keys the page already binds.
+    names); each field's `name`, `label`, `type`, `required`, optional `draft_label`
+    and options, each option with a value, a label and a one-character key; and the
+    optional `draft_fields`, the [field, label] pairs the page lists when an item
+    carries a model draft. Other keys (help text) pass through. `taken` holds the keys
+    the page already binds.
     """
     fields = checklist["fields"]
     if not fields:
@@ -163,6 +164,8 @@ def checklist_errors(checklist: dict, taken: set[str]) -> None:
                              f"the page answers only {list(FIELD_TYPES)}")
         if not isinstance(field.get("required", False), bool):
             raise SystemExit(f"REFUSING: checklist field {name!r}: `required` must be true or false")
+        if not isinstance(field.get("draft_label", ""), str):
+            raise SystemExit(f"REFUSING: checklist field {name!r}: `draft_label` must be a string")
         options = field.get("options")
         if not isinstance(options, list) or not options or not all(isinstance(o, dict) for o in options):
             raise SystemExit(f"REFUSING: checklist field {name!r}: `options` must be a non-empty list of objects")
@@ -189,6 +192,11 @@ def checklist_errors(checklist: dict, taken: set[str]) -> None:
     if not (isinstance(accept, list) and all(isinstance(f, str) and f in bools for f in accept)):
         raise SystemExit(f"REFUSING: a checklist needs `accept_when_true`, a list of its bool field names; "
                          f"got {accept!r}")
+    drafts = checklist.get("draft_fields", [])
+    if not (isinstance(drafts, list) and all(
+            isinstance(d, list) and len(d) == 2 and all(isinstance(x, str) and x for x in d) for d in drafts)):
+        raise SystemExit(f"REFUSING: a checklist's `draft_fields` must be a list of [field, label] pairs of "
+                         f"strings, the model's draft answers the page lists; got {drafts!r}")
 
 
 def manifest_errors(manifest: dict) -> list[str]:
