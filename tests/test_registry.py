@@ -194,3 +194,34 @@ def test_a_symlink_inside_the_checkout_cannot_lead_around_the_guards(reg, tmp_pa
         with pytest.raises(SystemExit, match="out of .* through a symlink"):
             reg.add_dataset("vi", "e", whole)
     assert reg.add_dataset("vi", "f", "here/f").name == "f"  # resolves to a folder inside the checkout
+
+
+def test_a_deleted_home_is_refused_not_made_again(reg):
+    import shutil
+    from transcript_labeling.auth import Auth
+    auth = Auth(reg.home)
+    auth.mint_code("/")
+    shutil.rmtree(reg.home.root)
+    with pytest.raises(SystemExit, match="run `tl init`"):
+        reg.create_project("p", privacy="local-only", writers=["o/r"])
+    with pytest.raises(SystemExit, match="run `tl init`"):
+        auth.mint_code("/")
+    assert not reg.home.root.exists()
+
+
+def test_state_folders_are_private(tmp_path):
+    import stat
+    from transcript_labeling.home import private_write
+    from transcript_labeling.store import EventLog, locked
+    # A umask of 077 would make every folder 0700 whatever the code asks for.
+    old = os.umask(0o022)
+    try:
+        with locked(tmp_path / "state" / "p" / "d" / ".tl.lock"):
+            pass
+        EventLog(tmp_path / "state2" / "events.jsonl").append("answer", "k", "operator", "browser", None)
+        private_write(tmp_path / "secret" / "token", "x")
+    finally:
+        os.umask(old)
+    assert stat.S_IMODE((tmp_path / "state" / "p" / "d").stat().st_mode) == 0o700
+    assert stat.S_IMODE((tmp_path / "state2").stat().st_mode) == 0o700
+    assert stat.S_IMODE((tmp_path / "secret").stat().st_mode) == 0o700

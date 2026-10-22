@@ -84,7 +84,7 @@ def locked(path: Path):
     The lock lives on its own file, never on the file it protects: git and
     `os.replace` swap that file's inode, so a lock on it would protect nothing.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)  # a state folder under $TL_HOME
     with open(path, "a") as fh:
         fcntl.flock(fh, fcntl.LOCK_EX)
         try:
@@ -315,7 +315,7 @@ class EventLog:
                now: str | None = None) -> dict:
         line = {"time": now or datetime.now(timezone.utc).isoformat(timespec="seconds"), "kind": kind,
                 "id": ident, "principal": principal, "login": login, "sha256_after": sha256_after}
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with open(self.path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(line, ensure_ascii=False) + "\n")
         return line

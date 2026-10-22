@@ -70,8 +70,13 @@ class Registry:
 
     @contextlib.contextmanager
     def locked(self):
-        """Hold the registry lock while reading, changing and writing it."""
-        self.home.root.mkdir(parents=True, exist_ok=True)
+        """Hold the registry lock while reading, changing and writing it.
+
+        A home that is gone is refused, never made again: `tl init` makes it private
+        (0700) with its token, and a silently remade one would be neither.
+        """
+        if not self.home.root.is_dir():
+            raise SystemExit(f"REFUSING: {self.home.root} does not exist; run `tl init`")
         with open(self.home.root / "registry.lock", "a") as fh:
             fcntl.flock(fh, fcntl.LOCK_EX)
             try:

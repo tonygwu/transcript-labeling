@@ -36,7 +36,7 @@ def home_path(environ=None) -> Path:
 
 def private_write(path: Path, text: str) -> None:
     """Write `path` atomically, readable by its owner only from the first byte."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:

@@ -61,6 +61,13 @@ class Auth:
             raise SystemExit(f"REFUSING: {home.root} does not exist; run `tl init`")
         self.home = home
 
+    def _locked(self):
+        # Checked on every use, not only at start: a home deleted while the server runs
+        # must not be remade by the lock below.
+        if not self.home.root.is_dir():
+            raise SystemExit(f"REFUSING: {self.home.root} does not exist; run `tl init`")
+        return locked(self.home.root / "sessions.lock")
+
     def _load(self) -> dict:
         path = self.home.sessions_path
         if not path.exists():
@@ -85,7 +92,7 @@ class Auth:
             raise SystemExit(f"REFUSING: login target {target!r} must be a path on this server")
         now = _now(now)
         code = secrets.token_urlsafe(24)
-        with locked(self.home.root / "sessions.lock"):
+        with self._locked():
             data = self._load()
             data["codes"][digest(code)] = {"target": target, "created_at": _stamp(now),
                                            "expires_at": _stamp(now + CODE_TTL), "used_at": None}
@@ -95,7 +102,7 @@ class Auth:
     def redeem(self, code: str, now: datetime | None = None) -> tuple[str, str]:
         """`(session id, target)` for an unused, unexpired code. Marks the code used."""
         now = _now(now)
-        with locked(self.home.root / "sessions.lock"):
+        with self._locked():
             data = self._load()
             entry = data["codes"].get(digest(code)) if isinstance(code, str) and code else None
             if entry is None:
