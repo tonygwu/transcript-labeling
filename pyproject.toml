@@ -1,0 +1,67 @@
+[build-system]
+# >=77 is required for PEP 639: the SPDX `license` string and `license-files` below
+# are only understood from that version on.
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "transcript-labeling"
+description = "An always-on local service where coding agents create transcript labeling projects and datasets, a person labels them in the browser, and the agents read the labels back."
+requires-python = ">=3.12"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Tony Wu", email = "446441+tonygwu@users.noreply.github.com" }]
+dynamic = ["version"]
+
+# ZERO runtime dependencies, on purpose. The service, the CLI and the MCP server use
+# only the standard library, so installing it can never break another tool's
+# environment, and verbatim-index can pin it without pulling anything else in.
+dependencies = []
+
+keywords = ["transcripts", "labeling", "annotation", "speaker-attribution"]
+
+classifiers = [
+  # Installed from GitHub; never uploaded to PyPI without a deliberate decision.
+  "Private :: Do Not Upload",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  # macOS only: the service runs under launchd, and the CLI's stdout guard uses
+  # fcntl F_GETPATH. The library half (tokens, spans, exports) is portable, but
+  # nothing tests that yet.
+  "Operating System :: MacOS :: MacOS X",
+]
+
+[project.urls]
+Repository = "https://github.com/tonygwu/transcript-labeling"
+
+[project.scripts]
+tl = "transcript_labeling.cli:main"
+
+[dependency-groups]
+# Test-only; still zero runtime deps. uv installs this group by default, so
+# `uv run pytest` uses the project's own pytest, never one found on PATH.
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["transcript_labeling*"]
+
+[tool.setuptools.package-data]
+transcript_labeling = ["page/*.js", "page/*.html", "page/*.css"]
+
+[tool.setuptools.dynamic]
+version = { attr = "transcript_labeling.__version__" }
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+# Makes `pytest` work straight from a checkout while tests still import the packaged
+# code under src/, not loose files.
+pythonpath = ["src"]
+# The trailing `-m "not browser"` is overridden by any `-m` on the command line, so
+# `pytest -m browser` runs exactly the browser checks.
+addopts = ["-ra", "--strict-markers", "--strict-config", "-m", "not browser"]
+markers = [
+  "browser: drives a real Chromium through Playwright. Deselected by default; run with `pytest -m browser`.",
+]

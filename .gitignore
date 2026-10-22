@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.egg-info/
+.venv/
+.pytest_cache/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Agent session state, never part of the code
+.overnight/
+.claude/wakeup-resume/
+.claude/scheduled_tasks.lock
+/scratch/
+
+# Labeling data never lives in this public repository. Transcripts, answers and
+# exports belong in $TL_HOME or a private data checkout (see AGENTS.md).
+human_answers.json
+*.transcripts/
+# ...except the synthetic fixtures the tests read.
+!tests/**/human_answers.json
+!tests/**/*.transcripts/
