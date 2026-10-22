@@ -9,7 +9,8 @@
                      meta header ranges, suggestions; a superset of a version-2 sidecar,
                      so `files.items_dir` can point at an existing `<page>.transcripts/`
       <answers file> exactly the version-2 file: labels, attribution, spans, corrections
-      review.json    server-owned notes, done marks and Finish state; created on first use
+      review.json    server-owned notes, done marks, suggestion reveals and Finish state;
+                     created on first use
 
 An item key is `<group>/<name>`, each part letters, digits, `_` or `-`.
 

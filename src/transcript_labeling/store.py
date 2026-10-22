@@ -2,32 +2,62 @@
 
 The answers file keeps the shape it has always had in verbatim-index,
 `{"labels", "attribution", "spans", "corrections"}`, so old files and their
-hashes keep working. Only `FileStore` exists: the answers file on disk. The
-server talks to the `Store` interface, so a remote store could replace the file
-without touching the page.
+hashes keep working. `FileStore` is the version-2 store the Phase 1 server uses:
+it keeps a copy in memory and takes no lock, so it must not serve a file anything
+else writes. `DatasetStore` is the service's store for version-3 datasets.
 """
 from __future__ import annotations
 
 import contextlib
 import fcntl
+import glob
+import hashlib
 import json
 import os
+import secrets
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Protocol
 
 SECTIONS = ("labels", "attribution", "spans", "corrections")
 
 
-def write_atomic(path: str | Path, text: str, encoding: str = "utf-8") -> Path:
+class StaleWrite(Exception):
+    """A save that would overwrite a change its page has not seen: the page must reload."""
+
+
+def fingerprint(path: Path) -> tuple | None:
+    """`(inode, size, mtime_ns, sha256)` of `path`, or None when it does not exist."""
+    try:
+        st = os.stat(path)
+        data = Path(path).read_bytes()
+    except FileNotFoundError:
+        return None
+    return (st.st_ino, st.st_size, st.st_mtime_ns, hashlib.sha256(data).hexdigest())
+
+
+def write_atomic(path: str | Path, text: str, encoding: str = "utf-8", expect: tuple | None | bool = False,
+                 written: list | None = None) -> Path:
     """Replace `path` with `text` in one step, or leave it exactly as it was.
 
     Writing to a temporary file in the same directory and renaming over the target
     means a concurrent reader sees either the whole old file or the whole new one.
+    Each write uses its own temporary name, so two writers never share one.
+
+    With `expect` (a `fingerprint` result, or None for "must not exist"), the file is
+    compared again just before the rename, and a change raises `StaleWrite` and
+    writes nothing. A writer that skips this store's lock, such as `git pull`, can
+    still land in the instant between that check and the rename; the window is
+    microseconds, not the length of a save.
+
+    With `written` (a list), the fingerprint of the new file is appended to it. It is
+    taken from the temporary file before the rename, which keeps the inode, size and
+    modification time, so no outside write after the rename can be mistaken for ours.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
     try:
         with open(tmp, "w", encoding=encoding) as fh:
             fh.write(text)
@@ -36,6 +66,10 @@ def write_atomic(path: str | Path, text: str, encoding: str = "utf-8") -> Path:
             # to the filesystem. Without this a crash can leave a renamed file
             # with no contents.
             os.fsync(fh.fileno())
+        if written is not None:
+            written.append(fingerprint(tmp))
+        if expect is not False and fingerprint(path) != expect:
+            raise StaleWrite(f"{path} changed on disk while this save was in progress; reload and try again")
         os.replace(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)
@@ -110,3 +144,183 @@ class FileStore:
             write_atomic(self.path, dump_answers(updated))
             self._answers = updated
             return {s: dict(updated[s]) for s in SECTIONS}
+
+
+def _clear_temps(path: Path) -> None:
+    """Remove temporary files a crashed save of `path` left. Call only under the file's lock."""
+    for tmp in path.parent.glob(f".{glob.escape(path.name)}.*.tmp"):
+        tmp.unlink(missing_ok=True)
+
+
+class _GuardedJSON:
+    """A JSON file the service writes under its dataset lock, refusing saves from a page
+    that has not seen the file's latest outside change.
+
+    The store remembers the fingerprint of the file as it last read or wrote it. Each
+    read and each save compares the file on disk with that fingerprint first. A
+    difference is an outside change, such as a `git pull` or a revert, and the store
+    counts it. A page receives a version with what it loads: a token unique to this
+    store object and the count of outside changes so far. A save sends the version
+    back, and the store refuses it with `StaleWrite` when an outside change was counted
+    after that version was issued, or when the version came from another store object:
+    a server process that has since restarted, or the other file of the dataset. The
+    page then says to reload. Saves from pages that loaded after the last outside
+    change merge as before, because each save changes the current file.
+
+    Keep ONE store object per file for the life of the server. A second object on the
+    same file would count the first one's saves as outside changes; because versions
+    carry the object's token, that mistake refuses pages loudly instead of accepting
+    a stale save.
+
+    The store's own writes never count: their fingerprint is taken from the temporary
+    file before the rename. The first read of a new store object counts nothing,
+    because there is nothing to compare with yet; versions issued before it are
+    refused by the token instead. A symlinked file is refused: the rename would
+    replace the link, and labels would stop reaching the file it pointed to.
+    """
+
+    def __init__(self, path: Path, lock: Path):
+        self.path = path
+        self.lock = lock
+        self.where = str(path)
+        self._seen: tuple | None | bool = False  # False: never read by this store
+        self._outside = 0
+        self._token = secrets.token_hex(6)
+        self._mutex = threading.Lock()
+
+    def _read(self):  # pragma: no cover - implemented by subclasses
+        raise NotImplementedError
+
+    def _dump(self, value) -> str:  # pragma: no cover - implemented by subclasses
+        raise NotImplementedError
+
+    def _check(self, value) -> None:  # pragma: no cover - implemented by subclasses
+        raise NotImplementedError
+
+    def _version(self) -> str:
+        """Issued only with a read, so no caller can get a version without the file's check."""
+        return f"{self._token}.{self._outside}"
+
+    def _observe(self, fp) -> None:
+        """Count an outside change if the file is not the one this store last saw. Call under the mutex."""
+        if self._seen is not False and fp != self._seen:
+            self._outside += 1
+        self._seen = fp
+
+    def _read_stable(self) -> tuple:
+        """`(value, fingerprint)`, refusing a file that changed while it was read."""
+        if self.path.is_symlink():
+            raise SystemExit(f"REFUSING: {self.path} is a symlink; a save would replace the link, so labels "
+                             "would stop reaching the file it points to. Replace it with the real file.")
+        before = fingerprint(self.path)
+        value = self._read()
+        if fingerprint(self.path) != before:
+            raise StaleWrite(f"{self.path} changed on disk while it was read; reload and try again")
+        return value, before
+
+    def load_versioned(self) -> tuple:
+        """`(value, version)`: what a page shows, and the version its saves must send back."""
+        with self._mutex:
+            value, fp = self._read_stable()
+            self._observe(fp)
+            return value, self._version()
+
+    def load(self):
+        return self.load_versioned()[0]
+
+    def update_hashed(self, change: Callable, version: str) -> tuple:
+        """`(stored value, sha256 of the bytes written, version)` for a save from a page that loaded `version`."""
+        if not isinstance(version, str) or not version:
+            raise ValueError("a save must carry the version its page loaded")
+        with locked(self.lock), self._mutex:
+            _clear_temps(self.path)
+            current, before = self._read_stable()
+            self._observe(before)
+            if version != self._version():
+                raise StaleWrite(f"{self.path} changed outside this page since it loaded (another program, such "
+                                 "as git, wrote it, or the server restarted); reload the page and try again")
+            updated = change(json.loads(json.dumps(current)))
+            self._check(updated)
+            text = self._dump(updated)
+            written: list = []
+            write_atomic(self.path, text, expect=before, written=written)
+            self._seen = written[0]
+            return updated, hashlib.sha256(text.encode()).hexdigest(), self._version()
+
+    def update(self, change: Callable, version: str):
+        return self.update_hashed(change, version)[0]
+
+
+class DatasetStore(_GuardedJSON):
+    """A version-3 dataset's answers file (see `_GuardedJSON`)."""
+
+    def _read(self) -> dict:
+        return load_answers(self.path)
+
+    def _dump(self, value: dict) -> str:
+        return dump_answers(value)
+
+    def _check(self, value: dict) -> None:
+        if set(value) != set(SECTIONS):
+            raise ValueError(f"an update must keep exactly the sections {SECTIONS}")
+
+
+REVIEW_SECTIONS = ("notes", "done", "reveals", "finished")
+
+
+def empty_review() -> dict:
+    return {"schema_version": 1, "notes": {}, "done": {}, "reveals": {}, "finished": None}
+
+
+def load_review(path: Path) -> dict:
+    """review.json: notes, item done marks, reveals and the dataset's Finish. A bad file stops the caller."""
+    if not path.exists():
+        return empty_review()
+    raw = json.loads(path.read_text())
+    if not isinstance(raw, dict) or raw.get("schema_version") != 1 or set(raw) != {"schema_version",
+                                                                                     *REVIEW_SECTIONS}:
+        raise SystemExit(f"REFUSING: {path} is not a version-1 review file")
+    return raw
+
+
+class ReviewStore(_GuardedJSON):
+    """review.json, owned by the server (see `_GuardedJSON`).
+
+    It is created on the first note, mark or reveal, so a dataset nobody reviewed has
+    no review file.
+    """
+
+    def _read(self) -> dict:
+        return load_review(self.path)
+
+    def _dump(self, value: dict) -> str:
+        return json.dumps(value, indent=1, ensure_ascii=False) + "\n"
+
+    def _check(self, value: dict) -> None:
+        if set(value) != {"schema_version", *REVIEW_SECTIONS}:
+            raise ValueError("an update must keep exactly the review sections")
+
+
+class EventLog:
+    """`events.jsonl` in a dataset's state folder: one line per browser write, never any text.
+
+    Each line holds the time, the kind (answer, note, reveal, done, finish), the id,
+    the principal, the kind of login, and the sha256 of the file after the write.
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+
+    def append(self, kind: str, ident: str, principal: str, login: str, sha256_after: str | None,
+               now: str | None = None) -> dict:
+        line = {"time": now or datetime.now(timezone.utc).isoformat(timespec="seconds"), "kind": kind,
+                "id": ident, "principal": principal, "login": login, "sha256_after": sha256_after}
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(line, ensure_ascii=False) + "\n")
+        return line
+
+    def read(self) -> list[dict]:
+        if not self.path.exists():
+            return []
+        return [json.loads(x) for x in self.path.read_text().splitlines() if x.strip()]
