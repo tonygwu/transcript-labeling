@@ -261,21 +261,31 @@ def test_no_label_file_at_all_is_refused(repo):
         commit_once(repo, "main", [repo / "labels" / "d" / "human_answers.json"], "m")
 
 
+def hook_never_started(refused):
+    """Fail naming the cause: the commit was stopped before git ran the hook."""
+    pytest.fail(f"git did not start the hook within the {gitcommit.GIT_TIMEOUT_S:g} s timeout, so its stopping "
+                f"was not tested; the refusal was: {refused.value}")
+
+
 def test_a_hung_hook_is_stopped_and_frees_both_locks(repo, monkeypatch):
-    monkeypatch.setattr(gitcommit, "GIT_TIMEOUT_S", 1.0)
+    # Long enough for git to reach the hook on a loaded machine: with 1 s, the commit
+    # was sometimes stopped before the hook ran, and the hook's pid file never appeared.
+    monkeypatch.setattr(gitcommit, "GIT_TIMEOUT_S", 3.0)
     a = answers(repo)
     hook = repo / ".git" / "hooks" / "pre-commit"
     pidfile = repo.parent / "hook.pid"
     hook.write_text(f"#!/bin/sh\necho $$ > {pidfile}\nexec sleep 30\n")
     hook.chmod(0o755)
     t0 = time.monotonic()
-    with pytest.raises(CommitRefused, match="ran longer than 1 s"):
+    with pytest.raises(CommitRefused, match="ran longer than 3 s") as refused:
         commit_once(repo, "main", [a], "m")
     assert time.monotonic() - t0 < 15
     assert not (repo / ".git" / "index.lock").exists()
     with open(repo / ".git" / "tl-sync.flock", "a") as fh:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)  # raises if still held
     assert git(repo, "diff", "--cached", "--name-only") == ""
+    if not pidfile.exists():
+        hook_never_started(refused)
     pid = int(pidfile.read_text())  # this hook's own process, not any `sleep 30` on the machine
     for _ in range(40):
         try:
@@ -467,14 +477,16 @@ def test_local_only_projects_and_commit_off_are_ignored(committer, tmp_path):
 
 
 def test_a_hook_that_ignores_sigterm_is_killed(repo, monkeypatch):
-    monkeypatch.setattr(gitcommit, "GIT_TIMEOUT_S", 1.0)
+    monkeypatch.setattr(gitcommit, "GIT_TIMEOUT_S", 3.0)  # time for git to reach the hook; see above
     monkeypatch.setattr(gitcommit, "STOP_GRACE_S", 1.0)
     pidfile = repo.parent / "stubborn.pid"
     hook = repo / ".git" / "hooks" / "pre-commit"
     hook.write_text(f"#!/bin/sh\ntrap '' TERM\necho $$ > {pidfile}\nsleep 30\n")
     hook.chmod(0o755)
-    with pytest.raises(CommitRefused, match="ran longer than 1 s"):
+    with pytest.raises(CommitRefused, match="ran longer than 3 s") as refused:
         commit_once(repo, "main", [answers(repo)], "m")
+    if not pidfile.exists():
+        hook_never_started(refused)
     pid = int(pidfile.read_text())
     for _ in range(40):
         try:
@@ -579,13 +591,16 @@ def test_a_hooks_background_job_never_inherits_the_sync_lock(repo):
 
 
 def test_a_hook_gets_the_grace_period_to_clean_up(repo, monkeypatch):
-    monkeypatch.setattr(gitcommit, "GIT_TIMEOUT_S", 1.0)
-    cleaned = repo.parent / "cleaned"
+    monkeypatch.setattr(gitcommit, "GIT_TIMEOUT_S", 3.0)  # time for git to reach the hook; see above
+    started, cleaned = repo.parent / "started", repo.parent / "cleaned"
     hook = repo / ".git" / "hooks" / "pre-commit"
-    hook.write_text(f"#!/bin/sh\ntrap 'sleep 0.5; touch {cleaned}; exit 1' TERM\nsleep 30 &\nwait\n")
+    hook.write_text(f"#!/bin/sh\ntrap 'sleep 0.5; touch {cleaned}; exit 1' TERM\ntouch {started}\n"
+                    "sleep 30 &\nwait\n")
     hook.chmod(0o755)
-    with pytest.raises(CommitRefused, match="ran longer than 1 s"):
+    with pytest.raises(CommitRefused, match="ran longer than 3 s") as refused:
         commit_once(repo, "main", [answers(repo)], "m")
+    if not started.exists():
+        hook_never_started(refused)
     assert cleaned.exists(), "the hook was killed before its SIGTERM cleanup finished"
 
 
