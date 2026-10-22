@@ -118,6 +118,7 @@ def test_dataset_paths_cannot_nest_by_letter_case_or_across_projects_on_one_chec
      "absolute checkout"),
 ])
 def test_project_creation_refusals(reg, kwargs, expect):
+    kwargs = dict(kwargs)  # the parameter is shared by every run of this case
     name = kwargs.pop("name")
     with pytest.raises(SystemExit, match=expect):
         reg.create_project(name, **kwargs)
