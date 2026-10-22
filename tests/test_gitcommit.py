@@ -7,7 +7,10 @@
              while the answers file can still be saved
   REFUSE     a staged foreign file, a merge, rebase, cherry-pick or revert in progress,
              a conflict without MERGE_HEAD, a detached HEAD, no label file at all
-  TIMEOUT    a hung hook is stopped, and the sync lock and index.lock are freed
+  TIMEOUT    a hung hook is stopped, and the sync lock and index.lock are freed; a hook
+             gets the grace period to clean up; one that ignores SIGTERM is killed
+  DYING      if the service dies mid-commit, git's holder keeps the sync lock until git
+             exits, and nothing git starts (a hook's background job) inherits it
   ALREADY    labels another agent already committed count as success
   UNSTAGE    a failed commit unstages only its own paths
   TIMING     300 s idle, 1800 s maximum age, at once on Finish; backoff on index.lock;
@@ -17,7 +20,9 @@ from __future__ import annotations
 
 import fcntl
 import os
+import signal
 import subprocess
+import sys
 import threading
 import time
 
@@ -104,11 +109,21 @@ def test_git_variables_pointing_elsewhere_are_ignored(repo, tmp_path, monkeypatc
     assert git(repo, "--git-dir", str(repo / ".git"), "log", "-1", "--format=%s").strip() == "m"
 
 
-def test_the_opt_in_is_checked_again_once_the_lock_is_held(repo):
+def test_the_opt_in_is_checked_again_once_the_lock_is_held(repo, monkeypatch):
     a = answers(repo)
     lock = open(repo / ".git" / "tl-sync.flock", "a")
     fcntl.flock(lock, fcntl.LOCK_EX)
-    errors = []
+    errors, waiting = [], threading.Event()
+
+    class SignallingFcntl:  # tells the test when commit_once, past its first check, asks for the lock
+        LOCK_EX, LOCK_NB, LOCK_UN = fcntl.LOCK_EX, fcntl.LOCK_NB, fcntl.LOCK_UN
+
+        @staticmethod
+        def flock(fh, op):
+            if op == fcntl.LOCK_EX:
+                waiting.set()
+            return fcntl.flock(fh, op)
+    monkeypatch.setattr(gitcommit, "fcntl", SignallingFcntl)
 
     def go():
         try:
@@ -117,7 +132,7 @@ def test_the_opt_in_is_checked_again_once_the_lock_is_held(repo):
             errors.append(str(exc))
     t = threading.Thread(target=go)
     t.start()
-    time.sleep(0.3)  # the commit is now waiting for the lock
+    assert waiting.wait(10)
     git(repo, "config", "--unset", MARKER)  # the sync tool backs out its opt-in
     fcntl.flock(lock, fcntl.LOCK_UN)
     lock.close()
@@ -429,7 +444,7 @@ def test_only_one_tick_runs_at_a_time(committer):
     committer.commit = slow_commit
     committer.note_save("vi", "d", finished=True)
     assert committer.tick(files)[0]["committed"]
-    assert inner == [[{"skipped": "another tick is still running"}]]
+    assert inner == [[{"project": None, "dataset": None, "skipped": "another tick is still running"}]]
     assert committer.status("vi", "d")["pending_saves"] == 0
 
 
@@ -449,3 +464,155 @@ def test_local_only_projects_and_commit_off_are_ignored(committer, tmp_path):
     assert committer.status("loc", "x") == {"commits": "not a git-private project"}
     st = committer.status("vi", "d")
     assert st["commits"] == "on" and st["pending_saves"] == 0
+
+
+def test_a_hook_that_ignores_sigterm_is_killed(repo, monkeypatch):
+    monkeypatch.setattr(gitcommit, "GIT_TIMEOUT_S", 1.0)
+    monkeypatch.setattr(gitcommit, "STOP_GRACE_S", 1.0)
+    pidfile = repo.parent / "stubborn.pid"
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text(f"#!/bin/sh\ntrap '' TERM\necho $$ > {pidfile}\nsleep 30\n")
+    hook.chmod(0o755)
+    with pytest.raises(CommitRefused, match="ran longer than 1 s"):
+        commit_once(repo, "main", [answers(repo)], "m")
+    pid = int(pidfile.read_text())
+    for _ in range(40):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail(f"the hook's process {pid}, which ignores SIGTERM, is still running")
+
+
+SERVICE = """
+import sys
+from transcript_labeling.gitcommit import commit_once
+commit_once(sys.argv[1], "main", [sys.argv[2]], "label commit")
+"""
+
+
+def start_service(repo, a):
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)}
+    return subprocess.Popen([sys.executable, "-c", SERVICE, str(repo), str(a)], env=env, start_new_session=True)
+
+
+def wait_for(path, seconds=20):
+    deadline = time.monotonic() + seconds
+    while not path.exists():
+        assert time.monotonic() < deadline, f"{path.name} never appeared"
+        time.sleep(0.02)
+
+
+def take_lock_after(repo, killed, seconds=30):
+    """Take the sync lock as the sync tool would; how long after `killed` it took."""
+    lock = open(repo / ".git" / "tl-sync.flock", "a")
+    while True:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return lock, time.monotonic() - killed
+        except BlockingIOError:
+            assert time.monotonic() - killed < seconds, "the sync lock was never released"
+            time.sleep(0.05)
+
+
+def test_if_the_service_dies_mid_commit_git_keeps_the_sync_lock(repo, tmp_path):
+    a = answers(repo)
+    started = repo.parent / "hook.started"
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text(f"#!/bin/sh\ntouch {started}\nsleep 2\n")
+    hook.chmod(0o755)
+    service = start_service(repo, a)
+    wait_for(started)  # git is now running the hook, under the lock
+    os.killpg(service.pid, signal.SIGKILL)  # as launchd kills the job's group when it exits
+    service.wait()
+    lock, _ = take_lock_after(repo, time.monotonic())
+    held_at = git(repo, "rev-parse", "HEAD")
+    time.sleep(4)  # long enough for an unlocked orphan's 2 s hook and commit to land
+    assert git(repo, "rev-parse", "HEAD") == held_at, "a commit landed while the sync tool held the lock"
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    lock.close()
+    assert last_commit(repo)[0].strip() == "label commit"  # git finished the commit before letting go
+
+
+
+def test_an_orphaned_git_add_keeps_the_sync_lock_too(repo):
+    a = answers(repo)
+    started = repo.parent / "filter.started"
+    (repo / ".gitattributes").write_text("*.json filter=slow\n")
+    git(repo, "config", "filter.slow.clean", f"touch {started}; sleep 3; cat")  # makes `git add` take 3 s
+    service = start_service(repo, a)
+    wait_for(started)  # `git add` is now running the filter, under the lock
+    os.killpg(service.pid, signal.SIGKILL)
+    service.wait()
+    lock, waited = take_lock_after(repo, time.monotonic())
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    lock.close()
+    assert waited > 0.8, f"the sync tool got the lock {waited:.2f} s after the service died, while git add ran"
+
+
+def test_a_hooks_background_job_never_inherits_the_sync_lock(repo):
+    a = answers(repo)
+    started, bg = repo.parent / "hook.started", repo.parent / "bg.pid"
+    hooks = repo / ".git" / "hooks"
+    (hooks / "pre-commit").write_text(f"#!/bin/sh\ntouch {started}\nsleep 2\n")
+    (hooks / "post-commit").write_text(f"#!/bin/sh\nsleep 20 </dev/null >/dev/null 2>&1 &\necho $! > {bg}\n")
+    for h in ("pre-commit", "post-commit"):
+        (hooks / h).chmod(0o755)
+    service = start_service(repo, a)
+    wait_for(started)
+    os.killpg(service.pid, signal.SIGKILL)  # the service dies; git finishes, and its hook leaves a job behind
+    service.wait()
+    try:
+        lock, waited = take_lock_after(repo, time.monotonic())
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        lock.close()
+        assert waited < 10, f"the sync tool waited {waited:.1f} s: the hook's 20 s job held the lock"
+        assert last_commit(repo)[0].strip() == "label commit"
+    finally:
+        if bg.exists():  # never mask the assertion above with a cleanup failure
+            try:
+                os.kill(int(bg.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def test_a_hook_gets_the_grace_period_to_clean_up(repo, monkeypatch):
+    monkeypatch.setattr(gitcommit, "GIT_TIMEOUT_S", 1.0)
+    cleaned = repo.parent / "cleaned"
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text(f"#!/bin/sh\ntrap 'sleep 0.5; touch {cleaned}; exit 1' TERM\nsleep 30 &\nwait\n")
+    hook.chmod(0o755)
+    with pytest.raises(CommitRefused, match="ran longer than 1 s"):
+        commit_once(repo, "main", [answers(repo)], "m")
+    assert cleaned.exists(), "the hook was killed before its SIGTERM cleanup finished"
+
+
+def test_every_write_call_runs_under_the_lock_holder(repo, monkeypatch):
+    calls = []
+    real_git = gitcommit.git
+
+    def spy(checkout, *args, **kw):
+        calls.append((args[0], kw.get("lock_fd")))
+        return real_git(checkout, *args, **kw)
+    monkeypatch.setattr(gitcommit, "git", spy)
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n")  # the commit fails, so the cleanup reset runs too
+    hook.chmod(0o755)
+    with pytest.raises(CommitRefused):
+        commit_once(repo, "main", [answers(repo)], "m")
+    writes = {name: fd for name, fd in calls if name in ("add", "commit", "reset")}
+    assert set(writes) == {"add", "commit", "reset"} and all(isinstance(fd, int) for fd in writes.values())
+    assert all(fd is None for name, fd in calls if name not in writes)
+
+
+def test_stop_returns_as_soon_as_the_group_has_exited(repo, monkeypatch):
+    monkeypatch.setattr(gitcommit, "GIT_TIMEOUT_S", 0.5)
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexec sleep 30\n")  # dies on SIGTERM at once
+    hook.chmod(0o755)
+    t0 = time.monotonic()
+    with pytest.raises(CommitRefused, match="ran longer than 0.5 s"):
+        commit_once(repo, "main", [answers(repo)], "m")
+    assert time.monotonic() - t0 < 4, "stop waited out the grace period for a group that had already exited"

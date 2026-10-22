@@ -23,9 +23,20 @@ refusal, which would drop a label commit that landed in between.
   Refusals    a checkout that is not the top level of its work tree, HEAD off the
               configured branch, a rebase, merge, cherry-pick or revert in progress,
               anything else staged, a conflict on the paths, or no label file at all.
-  Timeouts    every git call is stopped after GIT_TIMEOUT_S, first with SIGTERM to
-              its process group so git removes its own lock files, so a hung hook
-              cannot hold the sync lock forever.
+  Timeouts    every git call is stopped after GIT_TIMEOUT_S: SIGTERM to its process
+              group, so git removes its own lock files and hooks can clean up; up
+              to 10 s for the group to exit; then SIGKILL to whatever is left.
+  Dying       the git calls that write (add, commit, reset) run under a small
+              holder process that inherits the sync lock's descriptor and waits
+              for git, without passing the descriptor to git. If launchd kills the
+              service mid-commit, the holder keeps the lock until git exits, so the
+              sync tool never sees a commit land during its own pull or push; a
+              hook's background job or git's fsmonitor daemon never holds it. The
+              cost: a git that hangs after the service died holds the lock, with no
+              timeout, until someone stops it. `lsof <git dir>/tl-sync.flock` names
+              the holder, which leads its own process group: stop the whole group
+              (`kill -TERM -- -<pid>`), never the holder alone, or git would go on
+              without the lock.
   Retries     a held index.lock is retried 5 times with backoff over about 2
               minutes, then waits 10 minutes; a refusal waits 10 minutes. A new
               save ends a 10-minute wait.
@@ -42,6 +53,7 @@ import fcntl
 import os
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -56,6 +68,10 @@ MARKER = "tl.syncLock"
 INDEX_LOCK_RETRIES = 5
 BACKOFF_S = (2, 5, 10, 30, 60)  # about two minutes in all
 GIT_TIMEOUT_S = 120.0  # a commit's hooks included; longer is treated as hung
+STOP_GRACE_S = 10.0  # after SIGTERM, how long a git process group may take to exit
+#: Holds the sync lock (inherited from the service) while git runs as its child.
+#: subprocess closes every other descriptor in the child, so git never has the lock.
+HOLDER = "import subprocess, sys; sys.exit(subprocess.run(sys.argv[1:]).returncode)"
 
 
 class CommitRefused(Exception):
@@ -82,13 +98,18 @@ def _env() -> dict:
 
 
 def git(checkout: Path, *args: str, check: bool = True, git_bin: str = GIT,
-        timeout: float | None = None) -> subprocess.CompletedProcess:
-    """Run git. Output goes to temp files, not pipes, so a hook left running cannot block the read."""
+        timeout: float | None = None, lock_fd: int | None = None) -> subprocess.CompletedProcess:
+    """Run git. Output goes to temp files, not pipes, so a hook left running cannot block the read.
+
+    With `lock_fd`, the sync lock's descriptor, git runs under HOLDER, which keeps the
+    lock for as long as git runs even if this process dies, and gives it to no one else.
+    """
     timeout = GIT_TIMEOUT_S if timeout is None else timeout
     cmd = [git_bin, "-C", str(checkout), *args]
+    argv = cmd if lock_fd is None else [sys.executable, "-I", "-c", HOLDER, *cmd]
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-        proc = subprocess.Popen(cmd, stdout=out, stderr=err, stdin=subprocess.DEVNULL, env=_env(),
-                                start_new_session=True)
+        proc = subprocess.Popen(argv, stdout=out, stderr=err, stdin=subprocess.DEVNULL, env=_env(),
+                                start_new_session=True, pass_fds=() if lock_fd is None else (lock_fd,))
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -106,17 +127,32 @@ def git(checkout: Path, *args: str, check: bool = True, git_bin: str = GIT,
 
 
 def _stop(proc: subprocess.Popen) -> None:
-    """SIGTERM the process group (git removes its lock files on it), then SIGKILL after 10 s."""
-    for sig, grace in ((signal.SIGTERM, 10), (signal.SIGKILL, None)):
-        try:
-            os.killpg(proc.pid, sig)
-        except ProcessLookupError:
-            pass
-        try:
-            proc.wait(timeout=grace)
-            return
-        except subprocess.TimeoutExpired:
-            continue
+    """SIGTERM the process group (git removes its lock files on it, hooks may clean up),
+    wait up to STOP_GRACE_S for the whole group to exit, then SIGKILL what is left."""
+    _killpg(proc.pid, signal.SIGTERM)
+    deadline = time.monotonic() + STOP_GRACE_S
+    while time.monotonic() < deadline:
+        proc.poll()  # reap the group's leader, so it does not linger as a zombie
+        if not _group_alive(proc.pid):
+            break
+        time.sleep(0.05)
+    _killpg(proc.pid, signal.SIGKILL)
+    proc.wait()
+
+
+def _group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except (ProcessLookupError, PermissionError):  # gone, or (macOS: EPERM) only zombies left
+        return False
+    return True
+
+
+def _killpg(pgid: int, sig: int) -> None:
+    try:
+        os.killpg(pgid, sig)
+    except (ProcessLookupError, PermissionError):  # gone, or (macOS: EPERM) only zombies left
+        pass
 
 
 def absolute_git_dir(checkout: Path, git_bin: str = GIT) -> Path:
@@ -206,9 +242,9 @@ def commit_once(checkout: Path, branch: str, files: list[Path], message: str, *,
                                 git_bin=git_bin).returncode != 0]
             try:
                 if untracked:
-                    git(checkout, "add", "--", *untracked, git_bin=git_bin)
+                    git(checkout, "add", "--", *untracked, git_bin=git_bin, lock_fd=fh.fileno())
                 r = git(checkout, "commit", "--only", "-q", "-m", message, "--", *paths, check=False,
-                        git_bin=git_bin)
+                        git_bin=git_bin, lock_fd=fh.fileno())
                 if r.returncode != 0:
                     if "index.lock" in r.stderr:
                         raise IndexLocked(r.stderr.strip())
@@ -217,7 +253,7 @@ def commit_once(checkout: Path, branch: str, files: list[Path], message: str, *,
                     raise CommitRefused(f"git commit failed: {(r.stderr or r.stdout).strip()[:300]}")
             except (CommitRefused, IndexLocked):
                 # Unstage only our own paths; never another agent's work.
-                git(checkout, "reset", "-q", "--", *paths, check=False, git_bin=git_bin)
+                git(checkout, "reset", "-q", "--", *paths, check=False, git_bin=git_bin, lock_fd=fh.fileno())
                 raise
             sha = git(checkout, "rev-parse", "HEAD", git_bin=git_bin).stdout.strip()
             return {"committed": True, "sha": sha}
@@ -253,7 +289,7 @@ class Committer:
     stuck checkout delays other projects' commits by at most that long per tick. Any
     error in one dataset, even an unexpected one, is recorded as its `last_error` with
     a 10-minute wait, and the tick goes on to the next dataset. Only one tick runs at a
-    time; a second call while one runs returns `[{"skipped": ...}]` at once.
+    time; a second call while one runs returns one result with `skipped` set, at once.
     """
 
     SYNC_WAIT_S = 900.0  # a sync longer than this is retried after the 600 s refusal wait
@@ -289,7 +325,7 @@ class Committer:
     def tick(self, files_of) -> list[dict]:
         """Commit every dataset that is due. `files_of(project, dataset)` gives its label files."""
         if not self._ticking.acquire(blocking=False):
-            return [{"skipped": "another tick is still running"}]
+            return [{"project": None, "dataset": None, "skipped": "another tick is still running"}]
         try:
             return self._tick(files_of)
         finally:
