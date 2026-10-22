@@ -58,9 +58,16 @@ def name_key(path: str) -> str:
     return unicodedata.normalize("NFD", unicodedata.normalize("NFD", path).casefold())
 
 
+def name_parts(path: str) -> list[str]:
+    """The folder names of an absolute `path`, each as `name_key` compares it. Empty
+    parts are dropped, so the filesystem root ("/") has none and holds every folder."""
+    return [p for p in name_key(path).split("/") if p]
+
+
 def nests(a: str, b: str) -> bool:
-    """Whether one dataset folder would sit inside the other (or be the same folder)."""
-    pa, pb = name_key(a).split("/"), name_key(b).split("/")
+    """Whether one folder would sit inside the other (or be the same folder). Both paths
+    must be absolute: a relative one is compared as if it started at the root."""
+    pa, pb = name_parts(a), name_parts(b)
     n = min(len(pa), len(pb))
     return pa[:n] == pb[:n]
 
@@ -170,7 +177,7 @@ class Registry:
             # Compared folder by folder: the two may spell one name with a different
             # number of characters (é as one character or two), so slicing one by the
             # other's length can cut a name in half.
-            root_parts, parts = name_key(str(root)).split("/"), name_key(folder).split("/")
+            root_parts, parts = name_parts(str(root)), name_parts(folder)
             if parts[:len(root_parts)] != root_parts or len(parts) <= len(root_parts):
                 raise SystemExit(f"REFUSING: dataset path {rel!r} leads out of {root} through a symlink")
             if ".git" in parts[len(root_parts):]:

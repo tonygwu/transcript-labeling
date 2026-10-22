@@ -144,11 +144,19 @@ class Home:
                              "outside every git checkout")
         made = []
         for d in (self.root, self.root / "data", self.root / "state", self.root / "exports", self.logs_dir):
+            if d.exists() and not d.is_dir():
+                raise SystemExit(f"REFUSING: {d} is a file, not a folder")
             if not d.exists():
                 try:
                     d.mkdir(parents=True, mode=0o700)
-                except (NotADirectoryError, FileExistsError):
+                except NotADirectoryError:
                     raise SystemExit(f"REFUSING: {d} cannot be made: part of its path is a file") from None
+                except FileExistsError:
+                    if d.is_dir():
+                        continue  # another `tl init` made it first
+                    raise SystemExit(f"REFUSING: {d} cannot be made: " + (
+                        "it is a symlink to a folder that does not exist" if d.is_symlink() else
+                        "part of its path is a symlink that leads nowhere")) from None
                 made.append(str(d))
         os.chmod(self.root, 0o700)
         if not self.config_path.exists():

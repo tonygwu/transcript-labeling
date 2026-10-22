@@ -472,3 +472,55 @@ def test_a_home_that_comes_to_sit_inside_a_work_tree_is_refused_on_use(tmp_path)
     with pytest.raises(SystemExit, match="is inside the git work tree"):
         auth.mint_code("/")
     assert not reg.home.registry_path.exists()
+
+
+def test_the_filesystem_root_holds_every_folder(reg, tmp_path):
+    from transcript_labeling.registry import nests
+    assert nests("/", str(tmp_path)) and nests(str(tmp_path), "/") and nests("/", "/")
+    assert not nests("/x/co", "/x/co2") and nests("/x/co", "/x/co/a")
+    (tmp_path / "co").mkdir()
+    git = {"branch": "main", "commit": False}
+    reg.create_project("vi", privacy="git-private", writers=["o/data"], git={**git, "checkout": str(tmp_path / "co")})
+    with pytest.raises(SystemExit, match="overlaps the checkout .* of project 'vi'"):
+        reg.create_project("root", privacy="git-private", writers=["o/data"], git={**git, "checkout": "/"})
+
+
+def test_init_names_a_file_or_a_dangling_symlink_where_the_home_should_be(tmp_path):
+    from transcript_labeling.home import Home
+    (tmp_path / "file").write_text("x")
+    with pytest.raises(SystemExit, match="file is a file, not a folder"):
+        Home(tmp_path / "file").init()
+    (tmp_path / "dangling").symlink_to(tmp_path / "missing")
+    with pytest.raises(SystemExit, match="dangling cannot be made: it is a symlink to a folder that does not exist"):
+        Home(tmp_path / "dangling").init()
+    with pytest.raises(SystemExit, match="cannot be made: part of its path is a file"):
+        Home(tmp_path / "file" / "h").init()
+    with pytest.raises(SystemExit, match="dangling/h cannot be made: part of its path is a symlink that leads "
+                                         "nowhere"):
+        Home(tmp_path / "dangling" / "h").init()
+    (tmp_path / "home" / "data").mkdir(parents=True)
+    (tmp_path / "home" / "state").write_text("x")  # one of the home's own folders is a file
+    with pytest.raises(SystemExit, match="home/state is a file, not a folder"):
+        Home(tmp_path / "home").init()
+
+
+def test_init_racing_another_init_takes_the_folder_it_made(tmp_path, monkeypatch):
+    from pathlib import Path
+    from transcript_labeling.home import Home
+    real_mkdir, home = Path.mkdir, tmp_path / "h"
+
+    def other_init_first(self, *a, **kw):  # another `tl init` makes the folder in between
+        if self == home and not self.exists():
+            real_mkdir(self, mode=0o700)
+        return real_mkdir(self, *a, **kw)
+    monkeypatch.setattr(Path, "mkdir", other_init_first)
+    Home(home).init()
+    monkeypatch.setattr(Path, "mkdir", real_mkdir)
+    Home(home).require()
+
+
+def test_a_project_at_the_root_can_still_hold_datasets(reg, tmp_path):
+    # Only a hand-edited registry can hold one, now that creation refuses it.
+    put_git_project(reg, "root", "/")
+    folder = tmp_path / "ds"
+    assert reg.add_dataset("root", "d", str(folder).lstrip("/")) == folder
