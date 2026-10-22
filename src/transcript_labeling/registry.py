@@ -53,9 +53,9 @@ def check_relpath(rel: str) -> str:
 def name_key(path: str) -> str:
     """`path` as the Mac's default filesystem (APFS) compares names: without letter case,
     and with é written as one character or as e plus an accent counted as the same.
-    The checks assume that default, case-insensitive volume. On a case-sensitive one
-    the overlap and .git checks refuse a little more, but the check that a folder stays
-    inside its checkout would accept a folder whose path differs only in letter case."""
+    On a case-sensitive volume this makes the overlap and .git checks refuse a little
+    more; `add_dataset` also requires a dataset folder to sit inside its checkout as
+    spelled, so no volume lets one lead outside."""
     return unicodedata.normalize("NFD", unicodedata.normalize("NFD", path).casefold())
 
 
@@ -165,6 +165,14 @@ class Registry:
                 raise SystemExit(f"REFUSING: dataset path {rel!r} leads out of {root} through a symlink")
             if ".git" in parts[len(root_parts):]:
                 raise SystemExit(f"REFUSING: dataset path {rel!r} leads into .git through a symlink")
+            # Exact containment, for every project: on a case-sensitive volume a path that
+            # differs only in letter case can be a different folder, and the commit path
+            # checks containment exactly, so a folder reached through another spelling of the
+            # checkout's path (é in the other form, other letter case) would save labels that
+            # are never committed.
+            if not Path(folder).is_relative_to(root):
+                raise SystemExit(f"REFUSING: dataset path {rel!r} reaches {folder}, which spells {root} "
+                                 f"differently; name a folder inside the checkout as it is spelled")
             if entry["privacy"] == "git-private" and nests(folder, os.path.realpath(self.home.root)):
                 raise SystemExit(f"REFUSING: dataset path {rel!r} overlaps the service's home {self.home.root}")
             # Every dataset of every project, compared by real folder: two git-private

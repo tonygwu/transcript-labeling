@@ -236,3 +236,18 @@ def test_state_folders_are_private(tmp_path):
     assert stat.S_IMODE((tmp_path / "state" / "p" / "d").stat().st_mode) == 0o700
     assert stat.S_IMODE((tmp_path / "state2").stat().st_mode) == 0o700
     assert stat.S_IMODE((tmp_path / "secret").stat().st_mode) == 0o700
+
+
+def test_a_folder_reached_through_another_spelling_of_the_checkout_is_refused(reg, tmp_path):
+    # The commit path compares paths exactly, so such a folder's labels would never commit.
+    import unicodedata
+    co = tmp_path / unicodedata.normalize("NFD", "éé")
+    (co / "logs").mkdir(parents=True)
+    (co / "nfc").symlink_to(tmp_path / unicodedata.normalize("NFC", "éé") / "logs")
+    (co / "upper").symlink_to(tmp_path / unicodedata.normalize("NFD", "ÉÉ") / "logs")
+    reg.create_project("vi", privacy="git-private", writers=["o/data"],
+                       git={"checkout": str(co), "branch": "main", "commit": False})
+    for via in ("nfc/d", "upper/d"):
+        with pytest.raises(SystemExit, match="spells .* differently"):
+            reg.add_dataset("vi", "d", via)
+    assert reg.add_dataset("vi", "d", "logs/d").name == "d"
