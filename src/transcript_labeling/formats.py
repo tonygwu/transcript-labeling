@@ -8,7 +8,9 @@ offsets into the item. What changes per format is which tokens are speech:
               No WEBVTT header and no cue numbers. Any number of labels, including
               `Unknown`. Every cue must open with a label. A later line of a cue
               that opens with a label some cue opens with is another speaker in
-              the same cue, and becomes its own segment with the cue's times. The
+              the same cue, and becomes its own segment with the cue's times. A
+              later line that opens like a label no cue opens with is refused,
+              because crediting it to the speaker above would hide a speaker. The
               notes, every time line and every label are headers (the `meta`
               token kind): shown, never labelled.
   bracket-ts  verbatim-index captions: `[hh:mm:ss]` marks and `>>` turn marks inside
@@ -37,7 +39,7 @@ def _refuse_unsupported(text: str, lines: list[str]) -> None:
     if text.lstrip("\ufeff").lstrip().startswith("WEBVTT"):
         raise SystemExit("REFUSING: WebVTT is not supported yet; convert it, or add a parser to formats.py")
     timing = [i for i, line in enumerate(lines) if TIMING.fullmatch(line.lstrip("\ufeff"))]
-    if any(lines[i - 1].strip().isdigit() for i in timing if i > 0):
+    if any(lines[i - 1].lstrip("\ufeff").strip().isdigit() for i in timing if i > 0):
         raise SystemExit("REFUSING: this looks like SRT (numbered cues), which is not supported yet")
 
 
@@ -132,6 +134,10 @@ def _zoom_notes(text: str) -> dict:
         groups, current = [], None
         for ln in body:
             lab = _label(lines[ln][1])
+            if current is not None and lab is not None and lab[0] not in known:
+                raise SystemExit(f"REFUSING: line {ln + 1} starts like a speaker label that opens no cue, so its "
+                                 "words would be credited to the speaker above it; give that speaker a cue of "
+                                 "its own, or reword the line so it does not start with `Words:`")
             if current is None or (lab is not None and lab[0] in known):
                 current = {"line": ln, "label": lab[0], "colon": lab[1], "lines": [ln]}
                 groups.append(current)

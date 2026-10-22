@@ -68,6 +68,8 @@ def test_webvtt_and_srt_are_refused_and_other_shapes_detected():
         detect("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nhi\n")
     with pytest.raises(SystemExit, match="SRT"):
         detect("1\n00:00:01,000 --> 00:00:02,000\nhi\n")
+    with pytest.raises(SystemExit, match="SRT"):  # a byte-order mark before the cue number
+        parse("\ufeff1\n00:00:01,000 --> 00:00:02,000\nAnn: hi\n")
     assert detect("[00:00:05] hello >> there") == "bracket-ts"
     assert detect("just words here") == "plain"
     assert parse("just words", "plain") == {"format": "plain", "segments": None, "meta": [], "labels": []}
@@ -86,12 +88,22 @@ def test_a_cue_with_two_speakers_on_two_lines_becomes_two_segments_with_its_time
         [("Right, same time.", "bo"), ("Great, see you then.", "ann")]
 
 
-def test_a_later_line_without_a_known_label_stays_with_its_speaker():
-    text = ("00:00:01 --> 00:00:02\nAnn Able: first line\nHere is the thing: more words\n\n"
+def test_a_later_line_without_a_label_stays_with_its_speaker():
+    text = ("00:00:01 --> 00:00:02\nAnn Able: first line\nmore words, at 10:30 or so\n\n"
             "00:00:03 --> 00:00:04\nBo Brand: ok\n")
     p = parse(text)
     assert [s["label"] for s in p["segments"]] == ["Ann Able", "Bo Brand"]
-    assert words(text, p["segments"][0]["body"]) == "first line Here is the thing: more words"
+    assert words(text, p["segments"][0]["body"]) == "first line more words, at 10:30 or so"
+
+
+@pytest.mark.parametrize("line", ["Cy Cole: No, not yet.", "Here is the thing: more words"])
+def test_a_later_line_that_opens_like_an_unknown_label_is_refused(line):
+    # A speaker who opens no cue would otherwise be credited to the speaker above and
+    # vanish from the label list.
+    text = (f"00:00:01 --> 00:00:02\nAnn Able: Shall we sign today?\n{line}\n\n"
+            "00:00:03 --> 00:00:04\nAnn Able: Okay.\n")
+    with pytest.raises(SystemExit, match="line 3 starts like a speaker label that opens no cue"):
+        parse(text)
 
 
 @pytest.mark.parametrize("text,expect", [
