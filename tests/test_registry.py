@@ -442,3 +442,19 @@ def test_create_project_refuses_a_checkout_that_overlaps_the_service_home(reg, t
     (home.parent / f"{home.name}-co").mkdir()  # a sibling whose name starts with the home's
     assert reg.create_project("vi", privacy="git-private", writers=["o/data"],
                               git={**git, "checkout": str(home.parent / f"{home.name}-co")})
+
+
+def test_init_refuses_a_home_inside_a_git_work_tree(tmp_path):
+    from transcript_labeling.home import Home
+    (tmp_path / "repo" / ".git").mkdir(parents=True)
+    (tmp_path / "linked").mkdir()
+    (tmp_path / "linked" / ".git").write_text("gitdir: /elsewhere\n")  # a linked worktree's .git file
+    (tmp_path / "repo" / "a").mkdir()
+    (tmp_path / "via").symlink_to(tmp_path / "repo" / "a")  # into the tree, below its top folder
+    for home in (tmp_path / "repo" / ".tl", tmp_path / "repo" / "a" / "b", tmp_path / "linked" / "h",
+                 tmp_path / "via" / "h", tmp_path / "repo"):
+        with pytest.raises(SystemExit, match="is inside the git work tree"):
+            Home(home).init()
+        assert not home.exists() or home == tmp_path / "repo"
+    assert Home(tmp_path / "plain" / "h").init()
+    assert Home(tmp_path / "repo" / ".." / "plain2" / "h").init()  # leaves the tree through ..

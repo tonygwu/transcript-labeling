@@ -36,6 +36,23 @@ def home_path(environ=None) -> Path:
     return Path(env.get("TL_HOME") or DEFAULT_HOME).expanduser()
 
 
+def git_work_tree_above(path: Path) -> Path | None:
+    """The nearest folder at or above `path` that holds a `.git` entry (a folder, or
+    the file a linked worktree or submodule has), or None. `path` need not exist.
+
+    Known limit, as in textguard: a work tree with no `.git` entry of its own (a bare
+    repository used with --work-tree or core.worktree, or GIT_DIR with GIT_WORK_TREE)
+    is not found. Unlike textguard's check, an unreadable folder counts as having no
+    `.git` (os.path.lexists): `tl init` then fails making the home, so nothing leaks.
+    Any `.git` entry counts, even one git would not open, so this errs toward refusing.
+    """
+    real = Path(os.path.realpath(path))
+    for folder in (real, *real.parents):
+        if os.path.lexists(folder / ".git"):
+            return folder
+    return None
+
+
 def private_write(path: Path, text: str) -> None:
     """Write `path` atomically, readable by its owner only from the first byte."""
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -111,7 +128,15 @@ class Home:
 
     # ------------------------------------------------------------ setup
     def init(self, port: int = DEFAULT_PORT, operator_id: str = "operator") -> list[str]:
-        """Create the folder, config and token if missing. Returns what it created."""
+        """Create the folder, config and token if missing. Returns what it created.
+
+        Refuses a home inside a git work tree: the token, the registry and the state
+        would sit where a `git add -A` stages them and a push publishes them.
+        """
+        tree = git_work_tree_above(self.root)
+        if tree is not None:
+            raise SystemExit(f"REFUSING: {self.root} is inside the git work tree {tree}; put the service home "
+                             "outside every git checkout")
         made = []
         for d in (self.root, self.root / "data", self.root / "state", self.root / "exports", self.logs_dir):
             if not d.exists():
