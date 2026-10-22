@@ -253,6 +253,24 @@ def test_gh_visibility_asks_gh_and_fails_closed(tmp_path):
     assert gh_visibility("/srv/mirror.git", gh_bin=str(fake)) == "UNKNOWN (not a github.com repository)"
 
 
+def test_gh_visibility_fails_closed_on_non_ascii_output_under_an_ascii_locale(tmp_path):
+    import os
+    import sys
+    fake = tmp_path / "gh"
+    fake.write_bytes(b"#!/bin/sh\nprintf 'erreur: d\\303\\251p\\303\\264t introuvable\\n' >&2\nexit 1\n")
+    fake.chmod(0o755)
+    code = ("import sys, locale\n"
+            "from transcript_labeling.gitproject import gh_visibility\n"
+            f"print(locale.getpreferredencoding(False), gh_visibility({PRIVATE_URL!r}, gh_bin=sys.argv[1]))\n")
+    env = {**os.environ, "LC_ALL": "C", "PYTHONUTF8": "0", "PYTHONIOENCODING": "utf-8"}
+    out = subprocess.run([sys.executable, "-c", code, str(fake)], env=env, capture_output=True, text=True,
+                         encoding="utf-8")
+    assert out.returncode == 0, out.stderr[-500:]
+    encoding, result = out.stdout.split(" ", 1)
+    assert encoding.replace("-", "").lower() != "utf8", "the child did not run under a non-UTF-8 locale"
+    assert result.startswith("UNKNOWN (gh exited 1: erreur: d\u00e9p\u00f4t introuvable")
+
+
 def test_check_checkout_reports_every_bad_remote(checkout):
     git(checkout, "remote", "add", "a", "https://github.com/owner/code")
     git(checkout, "remote", "add", "b", "/srv/mirror.git")

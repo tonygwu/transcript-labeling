@@ -162,7 +162,7 @@ def locked(path: Path, make_parents: bool = True):
             path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)  # a state folder under $TL_HOME
         elif not path.parent.is_dir():
             raise SystemExit(f"REFUSING: {path.parent} does not exist; run `tl init`")
-        fh = open(path, "a")
+        fh = open(path, "ab")  # only locked, never written
         try:
             fcntl.flock(fh, fcntl.LOCK_EX)
             try:

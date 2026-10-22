@@ -63,7 +63,8 @@ def gh_visibility(url: str, gh_bin: str = "gh") -> str:
     try:
         r = subprocess.run([gh_bin, "repo", "view", f"github.com/{slug}", "--json", "visibility", "-q",
                             ".visibility"],
-                           capture_output=True, text=True, timeout=60)
+                           # gh writes UTF-8; the locale's encoding would raise on an accented error
+                           capture_output=True, encoding="utf-8", errors="replace", timeout=60)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"UNKNOWN (gh failed: {exc})"
     if r.returncode != 0 or not r.stdout.strip():

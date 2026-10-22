@@ -220,7 +220,7 @@ def commit_once(checkout: Path, branch: str, files: list[Path], message: str, *,
     paths = [str(f.relative_to(checkout)) for f in full if f.exists()]
     if not paths:
         raise CommitRefused(f"none of the label files {[f.name for f in full]} exists; nothing to commit")
-    with open(git_dir / LOCK_NAME, "a") as fh:
+    with open(git_dir / LOCK_NAME, "ab") as fh:  # only locked, never written
         if wait_s is None:
             fcntl.flock(fh, fcntl.LOCK_EX)
         else:
