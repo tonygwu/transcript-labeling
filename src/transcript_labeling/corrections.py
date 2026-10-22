@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .spans import sidecar_path
 from .store import write_atomic
-from .tokens import text_hash, token_kinds
+from .tokens import item_kinds, text_hash
 
 
 def validate_corrections(value: dict, transcript: dict) -> None:
@@ -20,7 +20,7 @@ def validate_corrections(value: dict, transcript: dict) -> None:
             raise ValueError("transcript changed; reload before correcting text")
     if not isinstance(value.get("edits"), list) or not value.get("checked_by"):
         raise ValueError("corrections require edits and checked_by")
-    kinds = token_kinds(transcript["tokens"])
+    kinds = item_kinds(transcript)
     end = 0
     for edit in value["edits"]:
         if not isinstance(edit, dict):
@@ -71,12 +71,13 @@ def corrected_text(transcript: dict, value: dict) -> str:
     return " ".join(pieces)
 
 
-def export_corrections(answers: Path, page: Path, out: Path) -> dict:
+def export_corrections(answers: Path, page: Path, out: Path, *, item_path=None) -> dict:
     """Export corrected reading text; does not overwrite source or grading inputs."""
+    item_path = item_path or (lambda key: sidecar_path(page, key))
     raw = json.loads(answers.read_text())
     recordings = {}
     for key, value in raw.get("corrections", {}).items():
-        transcript = json.loads(sidecar_path(page, key).read_text())
+        transcript = json.loads(item_path(key).read_text())
         text = corrected_text(transcript, value)
         recordings[key] = {**value, "corrected_text": text, "corrected_text_sha256": text_hash(text)}
     result = {"schema_version": 1, "recordings": recordings,

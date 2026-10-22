@@ -16,18 +16,28 @@ from pathlib import Path
 
 from .store import write_atomic
 from .timing import mark_times
-from .tokens import text_hash, token_kinds, tokenize
+from .tokens import item_kinds, text_hash, tokenize
 
+#: The speaker ids of a version-2 dataset. A version-3 dataset names its own.
 SPEAKERS = {"subject", "other", "unclear"}
 ORIGINS = {"human", "model_confirmed"}
+#: How a quote covered by more than one speaker is answered, and the uncertain id,
+#: in a version-2 dataset.
+V2_MIXED = "both"
+V2_UNCLEAR = "unclear"
 #: What a sidecar says its suggestions cover when the caller does not say.
 DEFAULT_SUGGESTION_SCOPE = "Located evidence quotes only; all other words unknown."
 
 
-def quote_review(quote: dict, transcript: dict, annotation: dict) -> dict:
-    """Unreviewed speech is pending; explicit uncertainty is a completed review."""
-    validate_annotation(annotation, transcript)
-    kinds = token_kinds(transcript["tokens"])
+def quote_review(quote: dict, transcript: dict, annotation: dict, *, speakers=None,
+                 unclear: str = V2_UNCLEAR, mixed: str = V2_MIXED) -> dict:
+    """Unreviewed speech is pending; explicit uncertainty is a completed review.
+
+    The answer is the one speaker who said every quote word, `mixed` when several
+    did, and `unclear` when any word is marked uncertain.
+    """
+    validate_annotation(annotation, transcript, speakers)
+    kinds = item_kinds(transcript)
     start, end = quote["quote_start"], quote["quote_end"]
     if not 0 <= start < end <= len(kinds):
         raise ValueError("quote offsets are outside the transcript")
@@ -35,22 +45,27 @@ def quote_review(quote: dict, transcript: dict, annotation: dict) -> dict:
     labels = {i: r["speaker"] for r in annotation["ranges"]
               for i in range(max(start, r["start"]), min(end, r["end"])) if kinds[i] == "speech"}
     missing = [i for i in speech if i not in labels]
-    uncertain = sum(v == "unclear" for v in labels.values())
+    uncertain = sum(v == unclear for v in labels.values())
     answer = None
     if speech and not missing:
-        answer = "unclear" if uncertain else "both" if len(set(labels.values())) > 1 else next(iter(labels.values()))
+        answer = unclear if uncertain else mixed if len(set(labels.values())) > 1 else next(iter(labels.values()))
     return {"answer": answer, "review_status": "complete" if answer else "incomplete",
             "total_words": len(speech), "reviewed_words": len(labels),
             "unreviewed_words": len(missing), "unclear_words": uncertain,
             "first_unreviewed": missing[0] if missing else None}
 
 
-def reconcile_quote_reviews(answers: dict, page: Path, quote_rows: list[dict]) -> dict:
+def reconcile_quote_reviews(answers: dict, page: Path, quote_rows: list[dict], *, item_path=None,
+                            review=None) -> dict:
     """Project saved ranges onto quotes, leaving source ranges/legacy answers intact.
 
     Used by GET, atomic saves and import. Reading an old file never rewrites it.
-    A stale annotation cannot supply a completed quote decision.
+    A stale annotation cannot supply a completed quote decision. `item_path` maps a
+    key to its item file (default: the sidecar beside `page`), and `review` is the
+    quote_review to use (default: the version-2 one).
     """
+    item_path = item_path or (lambda key: sidecar_path(page, key))
+    review = review or quote_review
     out = {**answers, "attribution": dict(answers.get("attribution", {}))}
     for row in quote_rows:
         annotation = answers.get("spans", {}).get(row["key"])
@@ -61,8 +76,8 @@ def reconcile_quote_reviews(answers: dict, page: Path, quote_rows: list[dict]) -
                 continue
             previous = out["attribution"].get(quote["qid"], {})
             try:
-                transcript = json.loads(sidecar_path(page, row["key"]).read_text())
-                result = quote_review(quote, transcript, annotation)
+                transcript = json.loads(item_path(row["key"]).read_text())
+                result = review(quote, transcript, annotation)
             except (OSError, ValueError) as exc:
                 result = {"answer": None, "review_status": "stale", "review_error": str(exc)}
             legacy = previous.get("legacy_answer")
@@ -97,7 +112,9 @@ def build_sidecar(key: str, raw: str, suggestions: list[dict], *, unlocated: int
             "suggestion_scope": scope}
 
 
-def validate_annotation(value: dict, transcript: dict) -> None:
+def validate_annotation(value: dict, transcript: dict, speakers=None) -> None:
+    """Refuse an annotation that does not fit its transcript. `speakers` defaults to the version-2 ids."""
+    speakers = SPEAKERS if speakers is None else set(speakers)
     if value.get("key") != transcript["key"]:
         raise ValueError("recording key does not match")
     if value.get("text_sha256") != transcript["text_sha256"] or value.get("token_count") != transcript["token_count"]:
@@ -112,21 +129,22 @@ def validate_annotation(value: dict, transcript: dict) -> None:
         a, b = span.get("start"), span.get("end")
         if type(a) is not int or type(b) is not int or not 0 <= a < b <= transcript["token_count"] or a < end:
             raise ValueError("ranges must be ordered, non-overlapping word offsets within the transcript")
-        if span.get("speaker") not in SPEAKERS or span.get("origin") not in ORIGINS:
+        if span.get("speaker") not in speakers or span.get("origin") not in ORIGINS:
             raise ValueError("a range needs a speaker and explicit human confirmation")
         end = b
     if not value.get("checked_by"):
         raise ValueError("checked_by is required")
 
 
-def import_spans(export: Path, page: Path, out: Path) -> dict:
+def import_spans(export: Path, page: Path, out: Path, *, item_path=None, speakers=None) -> dict:
+    item_path = item_path or (lambda key: sidecar_path(page, key))
     answers = json.loads(export.read_text())
     result = {}
     # Validate the entire batch before writing any output.
     for key, value in answers.get("spans", {}).items():
-        transcript = json.loads(sidecar_path(page, key).read_text())
-        validate_annotation(value, transcript)
-        kinds = token_kinds(transcript["tokens"])
+        transcript = json.loads(item_path(key).read_text())
+        validate_annotation(value, transcript, speakers)
+        kinds = item_kinds(transcript)
         ranges = [{**s, "text": " ".join(transcript["tokens"][s["start"]:s["end"]]),
                    "speech_text": " ".join(transcript["tokens"][i] for i in range(s["start"], s["end"])
                                             if kinds[i] == "speech")}

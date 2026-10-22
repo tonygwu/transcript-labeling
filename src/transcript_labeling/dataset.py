@@ -16,6 +16,7 @@ any projects. The modes are the package's: what a person records.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from .page.data import page_data, page_ids
@@ -30,6 +31,9 @@ MODES = ("checklist", "speakers", "captions")
 MODE_SECTION = {"checklist": "labels", "speakers": "spans", "captions": "corrections"}
 REQUIRED = ("schema_version", "tool", "name", "projects", "modes", "blind", "transcript_dir", "files", "recordings")
 REQUIRED_FILES = ("page", "answers", "quote_key")
+#: A session name, as verbatim's `build` and `migrate` accept it. The server mounts a
+#: session at `/s/<name>/`, so a name that needs URL escaping could never be reached.
+NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 class Session:
@@ -98,6 +102,8 @@ def manifest_errors(manifest: dict) -> list[str]:
     if manifest["schema_version"] != SCHEMA_VERSION or manifest["tool"] != "annotations":
         errs.append(f"schema_version {manifest['schema_version']!r} / tool {manifest['tool']!r} is not "
                     f"{SCHEMA_VERSION} / 'annotations'")
+    if not isinstance(manifest["name"], str) or not NAME.fullmatch(manifest["name"]):
+        errs.append(f"name {manifest['name']!r} must match {NAME.pattern}")
     projects = manifest["projects"]
     projects_ok = isinstance(projects, list) and projects and all(isinstance(p, str) and p for p in projects)
     if not projects_ok:

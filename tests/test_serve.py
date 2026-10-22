@@ -365,3 +365,10 @@ def test_corrections_roundtrip_with_server_revisions(speakers):
     assert disk["corrections"][KEY]["edits"] == [] and len(disk["corrections"][KEY]["history"]) == 2
     assert disk["spans"][KEY] == ranges
     assert sidecar_path(session.page, KEY).read_bytes() == source
+
+
+def test_a_session_name_that_needs_url_escaping_stops_the_server(tmp_path):
+    a = write_session(tmp_path / "a", session_data(["p/a"], []), modes=MODES, name="t")
+    spaced = type(a)(a.root, {**a.manifest, "name": "my set"})
+    with pytest.raises(SystemExit, match="URL escaping"):
+        S.build_server([spaced], 0)

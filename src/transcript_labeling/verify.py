@@ -80,7 +80,7 @@ def verify_session(session: Session, expect_answers_sha256: str | None = None,
     def check(name, ok, detail=None):
         checks.append({"check": name, "ok": bool(ok), **({"detail": detail} if detail is not None and not ok else {})})
 
-    if expect_answers_sha256:
+    if expect_answers_sha256 is not None:
         check("the answers file has the expected sha256", before == expect_answers_sha256,
               f"{before} != {expect_answers_sha256}")
     answers = load_answers(session.answers)
@@ -142,12 +142,16 @@ def verify_session(session: Session, expect_answers_sha256: str | None = None,
         if kind not in exporters:
             check(f"export {kind} reproduces {name}", False, f"no exporter for export kind {kind!r}")
             continue
-        disk = json.loads((session.root / name).read_text())
+        try:
+            disk = json.loads((session.root / name).read_text())
+        except (OSError, ValueError) as exc:
+            check(f"export {kind} reproduces {name}", False, f"the export file is unreadable: {exc}")
+            continue
         try:
             got = exporters[kind](session)
-        except (SystemExit, ValueError) as exc:
-            # An export that refuses is a failed check, not a missing report.
-            check(f"export {kind} reproduces {name}", False, f"the export refused: {exc}")
+        except (SystemExit, Exception) as exc:
+            # An export that refuses or breaks is a failed check, not a missing report.
+            check(f"export {kind} reproduces {name}", False, f"the export refused: {type(exc).__name__}: {exc}")
             continue
         check(f"export {kind} reproduces {name}", got == disk, "differs" if got != disk else None)
     report["live_serve"] = _serve_probe(session, reviewed, check)

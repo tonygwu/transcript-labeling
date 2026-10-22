@@ -11,12 +11,32 @@ from __future__ import annotations
 import hashlib
 import re
 
-#: What `token_kinds` can return. Only `speech` tokens are labelled.
-KINDS = ("timestamp", "turn", "gap", "punctuation", "speech")
+#: What `token_kinds` can return. Only `speech` tokens are labelled. `meta` is a
+#: caption segment header (clock times, the original speaker label) named by the
+#: item itself, since no pattern can tell a label such as `Note:` from speech.
+KINDS = ("timestamp", "turn", "gap", "punctuation", "meta", "speech")
 
 
-def token_kinds(tokens: list[str]) -> list[str]:
-    """Caption metadata is never speech, without changing existing raw offsets."""
+def token_kinds(tokens: list[str], meta: list | None = None) -> list[str]:
+    """Caption metadata is never speech, without changing existing raw offsets.
+
+    `meta` lists `[start, end)` token ranges that are segment headers; they are
+    `meta` whatever they look like.
+    """
+    kinds = _pattern_kinds(tokens)
+    for start, end in meta or []:
+        if type(start) is not int or type(end) is not int or not 0 <= start < end <= len(tokens):
+            raise ValueError(f"meta range {[start, end]} is outside a text of {len(tokens)} tokens")
+        kinds[start:end] = ["meta"] * (end - start)
+    return kinds
+
+
+def item_kinds(item: dict) -> list[str]:
+    """The kind of every token of an item or sidecar, its header ranges included."""
+    return token_kinds(item["tokens"], item.get("meta"))
+
+
+def _pattern_kinds(tokens: list[str]) -> list[str]:
     kinds = []
     for word in tokens:
         if re.fullmatch(r"\[\d{2}:\d{2}:\d{2}\]", word):

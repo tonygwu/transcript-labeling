@@ -8,6 +8,8 @@ without touching the page.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import threading
@@ -39,6 +41,22 @@ def write_atomic(path: str | Path, text: str, encoding: str = "utf-8") -> Path:
         tmp.unlink(missing_ok=True)
         raise
     return path
+
+
+@contextlib.contextmanager
+def locked(path: Path):
+    """Hold an exclusive `flock` on `path` (created if missing) for the block.
+
+    The lock lives on its own file, never on the file it protects: git and
+    `os.replace` swap that file's inode, so a lock on it would protect nothing.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
 
 
 def load_answers(path: Path) -> dict:

@@ -96,3 +96,22 @@ def test_sidecar_digest_matches_verbatims_formula(quote_session):
     # verbatim-index annotations.py (d5a3a8bf) computes the digest exactly like this;
     # the value below was computed with that code on this fixture.
     assert sidecar_digest(quote_session) == "eb804f37327e23e0674ffddea3541bb9c5a1ca7fe529a269828ffc9138a359a8"
+
+
+def test_a_missing_export_file_or_a_broken_exporter_is_a_failed_check_not_a_crash(quote_session):
+    s = with_exports(quote_session, {"spans": "gone.json"})
+    rep = verify_session(s)
+    assert failed(rep) == ["export spans reproduces gone.json"]
+    (quote_session.root / "q.json").write_text("{}")
+    s = with_exports(quote_session, {"quotes": "q.json"})
+
+    def broken(session):
+        raise KeyError("x")
+    rep = verify_session(s, exporters={"quotes": broken})
+    assert failed(rep) == ["export quotes reproduces q.json"]
+    assert "KeyError" in next(c["detail"] for c in rep["checks"] if not c["ok"])
+
+
+def test_an_empty_expected_hash_is_checked_not_skipped(quote_session):
+    rep = verify_session(quote_session, expect_answers_sha256="")
+    assert failed(rep) == ["the answers file has the expected sha256"]

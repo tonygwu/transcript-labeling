@@ -23,7 +23,7 @@ from .dataset import Session
 from .page.data import page_ids
 from .spans import reconcile_quote_reviews, validate_annotation
 from .store import SECTIONS, FileStore, Store
-from .tokens import token_kinds
+from .tokens import item_kinds
 
 HOST = "127.0.0.1"
 MAX_BODY = 256 * 1024
@@ -143,7 +143,7 @@ def make_handler(mounts: dict[str, Mounted]):
                     payload = json.loads(m.session.sidecar(key).read_text())
                 except (OSError, ValueError):
                     return self._json(409, {"error": "transcript unavailable; rebuild the page"})
-                return self._json(200, {**payload, "token_kinds": token_kinds(payload["tokens"])})
+                return self._json(200, {**payload, "token_kinds": item_kinds(payload)})
             return self._json(404, {"error": f"no such path: {path}"})
 
         def do_POST(self):
@@ -218,6 +218,9 @@ def build_server(sessions: list[Session], port: int, stores: list[Store] | None 
     if not sessions:
         raise SystemExit("REFUSING: no session to serve")
     names = [s.name for s in sessions]
+    unreachable = [n for n in names if quote(n, safe="") != n or n in ("", ".", "..")]
+    if unreachable:
+        raise SystemExit(f"REFUSING: session names {unreachable} would need URL escaping to be reached")
     if len(set(names)) != len(names):
         raise SystemExit(f"REFUSING: two sessions share a name: {names}")
     files = [s.answers.resolve() for s in sessions]

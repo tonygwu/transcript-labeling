@@ -141,3 +141,8 @@ def test_malformed_parts_are_named_never_a_crash(change, expect):
     m = copy.deepcopy(GOOD)
     change(m)
     assert any(expect in e for e in manifest_errors(m)), manifest_errors(m)
+
+
+@pytest.mark.parametrize("name", ["my set", "a/b", "-lead", "", "x?y"])
+def test_a_session_name_the_server_could_not_reach_is_refused(name):
+    assert any("must match" in e for e in manifest_errors({**GOOD, "name": name}))
