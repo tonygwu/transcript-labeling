@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from transcript_labeling.dataset3 import Dataset, manifest_errors, normalize_config
+from transcript_labeling.dataset3 import CONFIG_KEYS, Dataset, manifest_errors, normalize_config
 from transcript_labeling.items import add_items, make_item
 from transcript_labeling.spans import quote_review, validate_annotation
 from transcript_labeling.tokens import token_kinds
@@ -29,7 +29,7 @@ def test_defaults_are_filled_in():
 @pytest.mark.parametrize("config,expect", [
     ({}, "needs `speakers`"),
     ({"speakers": SPEAKERS, "bogus": 1}, "unknown dataset config keys"),
-    ({"speakers": [{"id": "Ann", "label": "T", "key": "1"}]}, "must match"),
+    ({"speakers": [{"id": "Ann", "label": "T", "key": "1"}]}, "must be a string matching"),
     ({"speakers": [{"id": "a", "label": "A", "key": "j"}]}, "must be one character the page does not"),
     ({"speakers": [{"id": "a", "label": "A", "key": "1"}, {"id": "a", "label": "B", "key": "2"}]}, "unique"),
     ({"speakers": [{"id": "a", "label": "A", "key": "1"}, {"id": "b", "label": "B", "key": "1"}]}, "unique"),
@@ -226,3 +226,41 @@ def test_a_malformed_checklist_in_a_manifest_is_a_named_error_not_a_crash(tmp_pa
     manifest = {**ds.manifest, "modes": ["speakers", "checklist"],
                 "checklist": {"fields": [{"name": "a", "label": "A", "type": "enum", "options": "ab"}], **GOAL}}
     assert any("must be a non-empty list of objects" in e for e in manifest_errors(manifest))
+
+
+WRONG = [5, "x", None, True, 1.5, [], {}, [5], [None], ["x"], [[]], [{}], {"a": 5}]
+
+
+@pytest.mark.parametrize("key", sorted(CONFIG_KEYS))
+def test_a_config_value_of_the_wrong_type_is_not_a_crash(tmp_path, key):
+    full = {"speakers": SPEAKERS, "modes": ["speakers", "captions", "checklist"], "title": "t",
+            "checklist": {"fields": [{"name": "ok", "label": "OK", "type": "bool", "options": YES_NO}], **GOAL},
+            "unclear": {"id": "unclear", "label": "U", "key": "u"}, "mixed_answer": "both", "reveal": "always",
+            "label_template": "{person}", "project_help": {}, "files": {}, "tags": []}
+    normalize_config(full)
+    manifest = Dataset.create(tmp_path / "d", "demo", "c", {"speakers": SPEAKERS}).manifest
+    for value in WRONG:
+        try:
+            normalize_config({**full, key: value})
+        except SystemExit:
+            pass  # a named refusal; any other exception fails the test
+        assert isinstance(manifest_errors({**manifest, **full, key: value}), list)
+
+
+@pytest.mark.parametrize("speaker", [{"id": 5, "label": "Five", "key": "5"}, {"id": None, "label": "N", "key": "5"}])
+def test_a_speaker_id_must_be_a_string_not_converted_to_one(speaker):
+    with pytest.raises(SystemExit, match="must be a string matching"):
+        normalize_config({"speakers": [SPEAKERS[0], speaker]})
+    with pytest.raises(SystemExit, match="must be a string matching"):
+        normalize_config({"speakers": SPEAKERS, "unclear": {**speaker, "key": "u"}})
+
+
+@pytest.mark.parametrize("text, expect", [
+    ("[]", "is not a JSON object"), ("5", "is not a JSON object"), ("null", "is not a JSON object"),
+    ('"x"', "is not a JSON object"), ('{"name": "c",\n<<<<<<< HEAD\n', "is not valid JSON"),
+])
+def test_opening_a_manifest_that_is_not_an_object_is_a_named_refusal(tmp_path, text, expect):
+    (tmp_path / "d").mkdir()
+    (tmp_path / "d" / "manifest.json").write_text(text)
+    with pytest.raises(SystemExit, match=f"manifest.json {expect}"):
+        Dataset.open(tmp_path / "d")

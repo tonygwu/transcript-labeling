@@ -55,9 +55,12 @@ def normalize_config(config: dict) -> dict:
     if unknown:
         raise SystemExit(f"REFUSING: unknown dataset config keys {unknown}; known: {sorted(CONFIG_KEYS)}")
     modes = config.get("modes", ["speakers", "captions"])
-    if not isinstance(modes, list) or not modes or set(modes) - set(MODES) or len(set(modes)) != len(modes):
+    if (not isinstance(modes, list) or not modes or not all(isinstance(m, str) for m in modes)
+            or set(modes) - set(MODES) or len(set(modes)) != len(modes)):
         raise SystemExit(f"REFUSING: modes {modes!r} must be a non-empty subset of {list(MODES)}")
     speakers = config.get("speakers", [])
+    if not isinstance(speakers, list):
+        raise SystemExit(f"REFUSING: speakers must be a list of {{id, label, key}}, got {speakers!r}")
     unclear = config.get("unclear", DEFAULT_UNCLEAR)
     if "speakers" in modes and not speakers:
         raise SystemExit("REFUSING: the speakers mode needs `speakers`: [{id, label, key}, ...]")
@@ -66,8 +69,8 @@ def normalize_config(config: dict) -> dict:
     for s in entries:
         if not isinstance(s, dict) or set(s) != {"id", "label", "key"}:
             raise SystemExit(f"REFUSING: speaker {s!r} must be exactly {{id, label, key}}")
-        if not SPEAKER_ID.fullmatch(str(s["id"])):
-            raise SystemExit(f"REFUSING: speaker id {s['id']!r} must match {SPEAKER_ID.pattern}")
+        if not isinstance(s["id"], str) or not SPEAKER_ID.fullmatch(s["id"]):
+            raise SystemExit(f"REFUSING: speaker id {s['id']!r} must be a string matching {SPEAKER_ID.pattern}")
         if not isinstance(s["label"], str) or not s["label"].strip():
             raise SystemExit(f"REFUSING: speaker {s['id']!r} needs a label")
         if not isinstance(s["key"], str) or len(s["key"]) != 1 or s["key"].lower() in RESERVED_KEYS:
@@ -221,7 +224,12 @@ class Dataset:
         path = root / MANIFEST
         if not path.exists():
             raise SystemExit(f"REFUSING: {root} has no {MANIFEST}")
-        manifest = json.loads(path.read_text())
+        try:
+            manifest = json.loads(path.read_text())
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"REFUSING: {path} is not valid JSON ({exc.msg}, line {exc.lineno})") from None
+        if not isinstance(manifest, dict):
+            raise SystemExit(f"REFUSING: {path} is not a JSON object")
         if manifest.get("schema_version") == 2:
             raise SystemExit(f"REFUSING: {path} is a version-2 session; adopt it with `tl dataset adopt`")
         problems = manifest_errors(manifest)
