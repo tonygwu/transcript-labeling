@@ -264,3 +264,24 @@ def test_opening_a_manifest_that_is_not_an_object_is_a_named_refusal(tmp_path, t
     (tmp_path / "d" / "manifest.json").write_text(text)
     with pytest.raises(SystemExit, match=f"manifest.json {expect}"):
         Dataset.open(tmp_path / "d")
+
+
+@pytest.mark.parametrize("key", ["title", "modes", "speakers", "unclear", "mixed_answer", "label_template",
+                                 "checklist", "reveal", "media", "project_help", "files"])
+def test_a_manifest_missing_a_setting_is_refused_when_opened(tmp_path, key):
+    ds = Dataset.create(tmp_path / "d", "demo", "c", {"speakers": SPEAKERS})
+    assert manifest_errors(ds.manifest) == []
+    manifest = {k: v for k, v in ds.manifest.items() if k != key}
+    (tmp_path / "d" / "manifest.json").write_text(json.dumps(manifest))
+    # Two were refused before this check, each with its own message.
+    expect = {"speakers": "needs `speakers`", "files": "missing `files`"}.get(
+        key, rf"settings \['{key}'\] are missing or not written in full")
+    with pytest.raises(SystemExit, match=expect):
+        Dataset.open(tmp_path / "d")
+
+
+def test_a_manifest_with_files_written_short_is_refused(tmp_path):
+    ds = Dataset.create(tmp_path / "d", "demo", "c", {"speakers": SPEAKERS})
+    assert any("['files'] are missing" in e for e in manifest_errors({**ds.manifest, "files": {}}))
+    assert any("['files'] are missing" in e
+               for e in manifest_errors({**ds.manifest, "files": {"answers": "human_answers.json"}}))

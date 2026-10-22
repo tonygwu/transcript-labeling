@@ -201,9 +201,15 @@ def manifest_errors(manifest: dict) -> list[str]:
         if not isinstance(manifest[k], str) or not NAME.fullmatch(manifest[k]):
             errs.append(f"{k} {manifest[k]!r} must match {NAME.pattern}")
     try:
-        normalize_config({k: manifest[k] for k in CONFIG_KEYS if k in manifest})
+        normal = normalize_config({k: manifest[k] for k in CONFIG_KEYS if k in manifest})
     except SystemExit as exc:
         errs.append(str(exc))
+    else:
+        # `tl` writes every setting in full, and the dataset code reads them from the
+        # manifest itself, so a missing or shortened one would fail later with a KeyError.
+        short = sorted(k for k, v in normal.items() if k not in manifest or manifest[k] != v)
+        if short:
+            errs.append(f"settings {short} are missing or not written in full; `tl` writes every setting")
     if not isinstance(manifest["items"], dict) or not all(
             isinstance(v, dict) and isinstance(v.get("text_sha256"), str) and type(v.get("token_count")) is int
             for v in manifest["items"].values()):
