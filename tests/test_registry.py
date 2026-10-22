@@ -196,6 +196,17 @@ def test_a_symlink_inside_the_checkout_cannot_lead_around_the_guards(reg, tmp_pa
     assert reg.add_dataset("vi", "f", "here/f").name == "f"  # resolves to a folder inside the checkout
 
 
+def test_the_git_check_compares_folder_names_not_character_counts(reg, tmp_path):
+    import unicodedata
+    co = tmp_path / unicodedata.normalize("NFD", "éé")  # four characters
+    (co / ".git").mkdir(parents=True)
+    (co / "g").symlink_to(tmp_path / unicodedata.normalize("NFC", "éé") / ".git")  # two characters
+    reg.create_project("vi", privacy="git-private", writers=["o/data"],
+                       git={"checkout": str(co), "branch": "main", "commit": False})
+    with pytest.raises(SystemExit, match="into .git through a symlink"):
+        reg.add_dataset("vi", "c", "g/hooks")
+
+
 def test_a_deleted_home_is_refused_not_made_again(reg):
     import shutil
     from transcript_labeling.auth import Auth

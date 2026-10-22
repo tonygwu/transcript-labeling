@@ -53,7 +53,9 @@ def check_relpath(rel: str) -> str:
 def name_key(path: str) -> str:
     """`path` as the Mac's default filesystem (APFS) compares names: without letter case,
     and with é written as one character or as e plus an accent counted as the same.
-    On a case-sensitive filesystem this makes the checks refuse a little more."""
+    The checks assume that default, case-insensitive volume. On a case-sensitive one
+    the overlap and .git checks refuse a little more, but the check that a folder stays
+    inside its checkout would accept a folder whose path differs only in letter case."""
     return unicodedata.normalize("NFD", unicodedata.normalize("NFD", path).casefold())
 
 
@@ -155,9 +157,13 @@ class Registry:
             # The real folder, so a symlink inside the checkout cannot lead out of it,
             # into .git, or onto another dataset.
             folder = os.path.realpath(root / rel)
-            if not nests(str(root), folder) or len(name_key(folder)) <= len(name_key(str(root))):
+            # Compared folder by folder: the two may spell one name with a different
+            # number of characters (é as one character or two), so slicing one by the
+            # other's length can cut a name in half.
+            root_parts, parts = name_key(str(root)).split("/"), name_key(folder).split("/")
+            if parts[:len(root_parts)] != root_parts or len(parts) <= len(root_parts):
                 raise SystemExit(f"REFUSING: dataset path {rel!r} leads out of {root} through a symlink")
-            if ".git" in name_key(folder[len(str(root)):]).split("/"):
+            if ".git" in parts[len(root_parts):]:
                 raise SystemExit(f"REFUSING: dataset path {rel!r} leads into .git through a symlink")
             if entry["privacy"] == "git-private" and nests(folder, os.path.realpath(self.home.root)):
                 raise SystemExit(f"REFUSING: dataset path {rel!r} overlaps the service's home {self.home.root}")
