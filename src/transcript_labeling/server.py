@@ -22,7 +22,7 @@ from .corrections import update_corrections
 from .dataset import Session
 from .page.data import page_ids
 from .spans import reconcile_quote_reviews, validate_annotation
-from .store import SECTIONS, FileStore, Store
+from .store import SECTIONS, FileStore, Store, strict_loads
 from .tokens import item_kinds
 
 HOST = "127.0.0.1"
@@ -158,7 +158,7 @@ def make_handler(mounts: dict[str, Mounted]):
                 self._drain(length)
                 return self._json(400, {"error": f"body must be 1..{MAX_BODY} bytes, got {length}"})
             try:
-                msg = json.loads(self.rfile.read(length))
+                msg = strict_loads(self.rfile.read(length))
             except (ValueError, UnicodeDecodeError) as exc:
                 return self._json(400, {"error": f"body is not JSON: {exc}"})
             if not isinstance(msg, dict):

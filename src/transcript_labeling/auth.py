@@ -87,7 +87,7 @@ class Auth:
                          if datetime.fromisoformat(v["expires_at"]) > now - CODE_TTL}
         data["sessions"] = {k: v for k, v in data["sessions"].items()
                             if datetime.fromisoformat(v["expires_at"]) > now}
-        private_write(self.home.sessions_path, json.dumps(data, indent=1) + "\n")
+        private_write(self.home.sessions_path, json.dumps(data, indent=1, allow_nan=False) + "\n")
 
     def mint_code(self, target: str, now: datetime | None = None) -> str:
         """A one-time login code that opens `target` (a path such as `/p/demo/call-1/`)."""

@@ -187,7 +187,7 @@ def add_items(ds: Dataset, state_dir: Path, entries: list[dict], *, upsert: bool
                 rel = ds.item_path(e["item"]["key"]).relative_to(ds.items_dir)
                 path = staging / rel
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(json.dumps(e["item"], ensure_ascii=False), encoding="utf-8")
+                path.write_text(json.dumps(e["item"], ensure_ascii=False, allow_nan=False), encoding="utf-8")
             for e in entries:
                 key = e["item"]["key"]
                 rel = ds.item_path(key).relative_to(ds.items_dir)

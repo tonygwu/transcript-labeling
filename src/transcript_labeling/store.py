@@ -13,6 +13,7 @@ import fcntl
 import glob
 import hashlib
 import json
+import math
 import os
 import secrets
 import threading
@@ -37,16 +38,61 @@ def fingerprint(path: Path) -> tuple | None:
     return (st.st_ino, st.st_size, st.st_mtime_ns, hashlib.sha256(data).hexdigest())
 
 
+class _DuplicateKey(ValueError):
+    """A key written twice in one object. A ValueError, so a body parser that already
+    turns bad JSON into a refusal does the same here."""
+
+    def __init__(self):
+        super().__init__("a key is written twice in one object")
+
+
+class _NotFinite(ValueError):
+    def __init__(self):
+        super().__init__("NaN or Infinity is not allowed in JSON")
+
+
+def _unique_pairs(pairs: list) -> dict:
+    out = dict(pairs)
+    if len(out) != len(pairs):
+        raise _DuplicateKey()
+    return out
+
+
+def _no_constant(name: str):
+    raise _NotFinite()
+
+
+def _finite_float(literal: str) -> float:
+    value = float(literal)
+    if not math.isfinite(value):  # 1e400 parses as Infinity
+        raise _NotFinite()
+    return value
+
+
+def strict_loads(text: str | bytes):
+    """`json.loads`, refusing what the standard parser lets through: a key written twice
+    in one object (it keeps the last copy without a word), NaN or Infinity, and a number
+    too large for a float (it becomes Infinity). Each is a ValueError."""
+    return json.loads(text, object_pairs_hook=_unique_pairs, parse_constant=_no_constant,
+                      parse_float=_finite_float)
+
+
 def read_json_object(path: Path) -> dict:
     """The JSON object stored in `path`, or a refusal that names the file.
 
     Refuses a file that is not UTF-8, is not JSON (a merge left conflict markers in
-    it, say), holds a number Python will not convert, is nested too deeply to parse,
-    or holds something other than an object. A missing file still raises
-    FileNotFoundError.
+    it, say), holds a key twice in one object or NaN or Infinity, holds a number
+    Python will not convert, is nested too deeply to parse, or holds something other
+    than an object. A missing file still raises FileNotFoundError.
     """
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = strict_loads(path.read_text(encoding="utf-8"))
+    except _DuplicateKey:
+        # The key is not named: refusal text can reach logs, and a key could be anything.
+        raise SystemExit(f"REFUSING: {path} holds a key twice in one object, and only the last copy "
+                         "would be read") from None
+    except _NotFinite:
+        raise SystemExit(f"REFUSING: {path} holds NaN or Infinity, which JSON does not allow") from None
     except UnicodeDecodeError:
         raise SystemExit(f"REFUSING: {path} is not UTF-8 text") from None
     except json.JSONDecodeError as exc:
@@ -152,7 +198,7 @@ def load_answers(path: Path) -> dict:
 
 def dump_answers(answers: dict) -> str:
     """The answers file's bytes. Every writer uses this, so the format cannot drift."""
-    return json.dumps(answers, indent=1, ensure_ascii=False) + "\n"
+    return json.dumps(answers, indent=1, ensure_ascii=False, allow_nan=False) + "\n"
 
 
 class Store(Protocol):
@@ -340,7 +386,7 @@ class ReviewStore(_GuardedJSON):
         return load_review(self.path)
 
     def _dump(self, value: dict) -> str:
-        return json.dumps(value, indent=1, ensure_ascii=False) + "\n"
+        return json.dumps(value, indent=1, ensure_ascii=False, allow_nan=False) + "\n"
 
     def _check(self, value: dict) -> None:
         if set(value) != {"schema_version", *REVIEW_SECTIONS}:
@@ -363,7 +409,7 @@ class EventLog:
                 "id": ident, "principal": principal, "login": login, "sha256_after": sha256_after}
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with open(self.path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(line, ensure_ascii=False) + "\n")
+            fh.write(json.dumps(line, ensure_ascii=False, allow_nan=False) + "\n")
         return line
 
     def read(self) -> list[dict]:
@@ -380,7 +426,9 @@ class EventLog:
             if not x.strip():
                 continue
             try:
-                line = json.loads(x)
+                line = strict_loads(x)
+            except (_DuplicateKey, _NotFinite):
+                raise SystemExit(f"REFUSING: {self.path} line {n} holds a key twice or NaN or Infinity") from None
             except ValueError as exc:  # also catches a JSONDecodeError
                 raise SystemExit(f"REFUSING: {self.path} line {n} is not valid JSON ({exc})") from None
             except RecursionError:

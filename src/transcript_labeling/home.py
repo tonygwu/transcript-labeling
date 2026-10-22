@@ -123,7 +123,8 @@ class Home:
         os.chmod(self.root, 0o700)
         if not self.config_path.exists():
             private_write(self.config_path, json.dumps(
-                {"port": port, "operator_id": operator_id, "allowed_hosts": [], "access": {}}, indent=1) + "\n")
+                {"port": port, "operator_id": operator_id, "allowed_hosts": [], "access": {}}, indent=1,
+                allow_nan=False) + "\n")
             made.append(str(self.config_path))
         if not self.token_path.exists():
             private_write(self.token_path, secrets.token_urlsafe(32) + "\n")

@@ -92,7 +92,7 @@ class Registry:
         return reg
 
     def _save(self, reg: dict) -> None:
-        write_atomic(self.home.registry_path, json.dumps(reg, indent=1, ensure_ascii=False) + "\n")
+        write_atomic(self.home.registry_path, json.dumps(reg, indent=1, ensure_ascii=False, allow_nan=False) + "\n")
 
     def project(self, name: str) -> dict:
         projects = self.load()["projects"]

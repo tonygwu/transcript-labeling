@@ -310,13 +310,13 @@ class Dataset:
         return cat
 
     def write_catalog(self, catalog: dict) -> None:
-        write_atomic(self.file("catalog"), json.dumps(catalog, indent=1, ensure_ascii=False) + "\n")
+        write_atomic(self.file("catalog"), json.dumps(catalog, indent=1, ensure_ascii=False, allow_nan=False) + "\n")
 
     def write_manifest(self, manifest: dict) -> None:
         problems = manifest_errors(manifest)
         if problems:
             raise SystemExit("REFUSING to write a manifest: " + "; ".join(problems))
-        write_atomic(self.root / MANIFEST, json.dumps(manifest, indent=1, ensure_ascii=False) + "\n")
+        write_atomic(self.root / MANIFEST, json.dumps(manifest, indent=1, ensure_ascii=False, allow_nan=False) + "\n")
         self.manifest = manifest
 
     # ------------------------------------------------------------ labeling

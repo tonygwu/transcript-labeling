@@ -470,3 +470,49 @@ def test_an_event_line_holding_a_unicode_line_separator_reads_back(tmp_path):
         log.append("answer", "k", who, "browser", None)
     log.append("note", "k", "operator", "browser", None)
     assert [x["principal"] for x in log.read()] == ["Jane\u2028Roe", "Jo\u2029Doe", "Al\x85Bee", "operator"]
+
+
+@pytest.mark.parametrize("text, expect", [
+    ('{"labels": {"call/a": {"ok": true}, "call/a": {"ok": false}}, "attribution": {}}', "holds a key twice"),
+    ('{"labels": {}, "labels": {}, "attribution": {}}', "holds a key twice"),
+    ('{"labels": {"k": {"t": NaN}}, "attribution": {}}', "holds NaN or Infinity"),
+    ('{"labels": {"k": {"t": -Infinity}}, "attribution": {}}', "holds NaN or Infinity"),
+    ('{"labels": {"k": {"t": 1e400}}, "attribution": {}}', "holds NaN or Infinity"),  # too large: Infinity
+])
+def test_a_duplicate_key_or_a_non_finite_number_is_refused_not_dropped(tmp_path, text, expect):
+    from transcript_labeling.store import EventLog
+    p = tmp_path / "human_answers.json"
+    p.write_text(text)
+    with pytest.raises(SystemExit, match=f"human_answers.json {expect}"):
+        load_answers(p)
+    log = EventLog(tmp_path / "events.jsonl")
+    for line in ('{"kind": "a", "kind": "b"}', '{"kind": NaN}', '{"t": 1e400}'):
+        log.path.write_text(line + "\n")
+        with pytest.raises(SystemExit, match="events.jsonl line 1 holds a key twice or NaN or Infinity"):
+            log.read()
+    p.write_text('{"labels": {"call/a": {"ok": true}, "call/b": {"ok": 1.5}}, "attribution": {}}')
+    assert sorted(load_answers(p)["labels"]) == ["call/a", "call/b"]
+
+
+def test_no_state_writer_writes_nan_or_infinity(tmp_path):
+    # A NaN that reached a file would make the next read refuse the file just written.
+    from transcript_labeling.store import EventLog, ReviewStore, empty_review
+    nan = float("nan")
+    with pytest.raises(ValueError):
+        dump_answers({"labels": {"k": {"t": nan}}, "attribution": {}})
+    with pytest.raises(ValueError):
+        EventLog(tmp_path / "events.jsonl").append("answer", "k", "operator", "browser", None, now=nan)
+    with pytest.raises(ValueError):
+        ReviewStore(tmp_path / "review.json", tmp_path / ".tl.lock")._dump(
+            {**empty_review(), "notes": {"k": {"t": float("inf")}}})
+
+
+def test_the_exporters_read_the_answers_file_strictly(tmp_path):
+    from transcript_labeling.corrections import export_corrections
+    from transcript_labeling.spans import import_spans
+    p = tmp_path / "human_answers.json"
+    p.write_text('{"labels": {}, "attribution": {}, "spans": {"k": {}, "k": {}}}')
+    with pytest.raises(SystemExit, match="holds a key twice"):
+        import_spans(p, tmp_path / "page.html", tmp_path / "out.json")
+    with pytest.raises(SystemExit, match="holds a key twice"):
+        export_corrections(p, tmp_path / "page.html", tmp_path / "out.json")

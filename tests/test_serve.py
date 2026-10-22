@@ -182,6 +182,11 @@ def test_refusals_write_nothing(one):
     assert code == 400 and "not JSON" in res["error"]
     code, res = post(base, None, raw=b"[1]")
     assert code == 400 and "not an object" in res["error"]
+    for raw, why in ((b'{"kind": "labels", "id": "p/a", "value": {"t": NaN}}', "NaN or Infinity"),
+                     (b'{"kind": "labels", "id": "p/a", "value": {"t": 1e400}}', "NaN or Infinity"),
+                     (b'{"kind": "labels", "kind": "spans", "id": "p/a", "value": {}}', "written twice")):
+        code, res = post(base, None, raw=raw)
+        assert code == 400 and why in res["error"], res
     code, res = post(base, None, raw=b"x" * (S.MAX_BODY + 1))
     assert code == 400 and "bytes" in res["error"]
     code, res = post(base, {"kind": "labels"}, kind_path="/api/nothing")

@@ -14,7 +14,7 @@ import json
 import re
 from pathlib import Path
 
-from .store import write_atomic
+from .store import read_json_object, write_atomic
 from .timing import mark_times
 from .tokens import item_kinds, text_hash, tokenize
 
@@ -138,7 +138,7 @@ def validate_annotation(value: dict, transcript: dict, speakers=None) -> None:
 
 def import_spans(export: Path, page: Path, out: Path, *, item_path=None, speakers=None) -> dict:
     item_path = item_path or (lambda key: sidecar_path(page, key))
-    answers = json.loads(export.read_text())
+    answers = read_json_object(export)
     result = {}
     # Validate the entire batch before writing any output.
     for key, value in answers.get("spans", {}).items():
@@ -153,5 +153,5 @@ def import_spans(export: Path, page: Path, out: Path, *, item_path=None, speaker
     payload = {"schema_version": 1, "recordings": result,
                "note": "Sparse, assisted human annotations. Unmarked words remain unknown. "
                        "These do not rewrite grades or constitute a blind attribution audit."}
-    write_atomic(out, json.dumps(payload, indent=1, ensure_ascii=False) + "\n")
+    write_atomic(out, json.dumps(payload, indent=1, ensure_ascii=False, allow_nan=False) + "\n")
     return payload

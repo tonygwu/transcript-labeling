@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .spans import sidecar_path
-from .store import write_atomic
+from .store import read_json_object, write_atomic
 from .tokens import item_kinds, text_hash
 
 
@@ -74,7 +74,7 @@ def corrected_text(transcript: dict, value: dict) -> str:
 def export_corrections(answers: Path, page: Path, out: Path, *, item_path=None) -> dict:
     """Export corrected reading text; does not overwrite source or grading inputs."""
     item_path = item_path or (lambda key: sidecar_path(page, key))
-    raw = json.loads(answers.read_text())
+    raw = read_json_object(answers)
     recordings = {}
     for key, value in raw.get("corrections", {}).items():
         transcript = json.loads(item_path(key).read_text())
@@ -83,5 +83,5 @@ def export_corrections(answers: Path, page: Path, out: Path, *, item_path=None) 
     result = {"schema_version": 1, "recordings": recordings,
               "note": "Human caption corrections; whitespace normalized. Offsets still refer to original tokens. "
                       "Existing scores use the original captions; regrading is a separate step."}
-    write_atomic(out, json.dumps(result, ensure_ascii=False, indent=1) + "\n")
+    write_atomic(out, json.dumps(result, ensure_ascii=False, indent=1, allow_nan=False) + "\n")
     return result
