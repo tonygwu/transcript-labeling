@@ -6,7 +6,8 @@ MCP server cannot. Before the registry entry is written:
   checkout   an absolute path to the top level of a git work tree, stored resolved.
              A checkout that is, contains, or sits inside another project's checkout
              is refused, so two projects do not own overlapping dataset folders.
-             `Registry.create_project` checks this under the registry lock,
+             So is a checkout that is, contains, or sits inside the service home.
+             `Registry.create_project` checks both under the registry lock,
              comparing folder names as the Mac's filesystem does.
   remotes    every fetch and push URL of every remote, after `insteadOf` and
              `pushInsteadOf` rewriting, must be a repository that

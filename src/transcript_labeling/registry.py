@@ -127,6 +127,11 @@ class Registry:
                     if taken and nests(folder, os.path.realpath(taken)):
                         raise SystemExit(f"REFUSING: {git['checkout']} overlaps the checkout {taken} of project "
                                          f"{other!r}; add datasets there")
+                # The token, the registry and the state must stay outside every work tree
+                # that pushes, so a `git add -A` there can never stage them.
+                if nests(folder, os.path.realpath(self.home.root)):
+                    raise SystemExit(f"REFUSING: {git['checkout']} overlaps the service's home {self.home.root}; "
+                                     "a git-private checkout must be outside it, and it outside the checkout")
             entry = {"title": title or name, "privacy": privacy, "writers": sorted(set(writers)),
                      "created_at": now or datetime.now(timezone.utc).isoformat(timespec="seconds"),
                      **({"git": git} if git else {}), "datasets": {}}

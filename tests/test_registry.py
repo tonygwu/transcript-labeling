@@ -425,3 +425,20 @@ def test_a_rival_create_just_before_the_lock_is_seen_under_it(reg, tmp_path, mon
     with pytest.raises(SystemExit, match="overlaps the checkout .* of project 'rival'"):
         reg.create_project("mine", privacy="git-private", writers=["o/data"], git=git)
     assert sorted(reg.load()["projects"]) == ["rival"]
+
+
+def test_create_project_refuses_a_checkout_that_overlaps_the_service_home(reg, tmp_path):
+    git = {"branch": "main", "commit": False}
+    home = reg.home.root
+    (home / "data" / "inner").mkdir(parents=True)
+    (tmp_path / "to-home").symlink_to(home)
+    upper = home.parent.with_name(home.parent.name.upper())  # the same folder on the Mac's volume
+    for overlap in (home, home.parent, home / "data" / "inner",  # is it, holds it, sits inside it
+                    tmp_path / "to-home", upper):  # through a symlink, and in other letter case
+        with pytest.raises(SystemExit, match="overlaps the service's home"):
+            reg.create_project("vi", privacy="git-private", writers=["o/data"],
+                               git={**git, "checkout": str(overlap)})
+    assert reg.load()["projects"] == {}
+    (home.parent / f"{home.name}-co").mkdir()  # a sibling whose name starts with the home's
+    assert reg.create_project("vi", privacy="git-private", writers=["o/data"],
+                              git={**git, "checkout": str(home.parent / f"{home.name}-co")})
