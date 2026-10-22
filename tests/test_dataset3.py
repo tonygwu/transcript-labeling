@@ -136,3 +136,93 @@ def test_meta_ranges_are_never_speech():
     assert token_kinds(toks, [[0, 4]]) == ["meta"] * 4 + ["speech", "speech"]
     with pytest.raises(ValueError, match="outside"):
         token_kinds(toks, [[4, 9]])
+
+
+YES_NO = [{"value": True, "label": "Yes", "key": "y", "cls": "y"}, {"value": False, "label": "No", "key": "n"}]
+GOAL = {"goal": {"count": 1, "help": "items verified"}, "accept_when_true": []}
+
+
+def checklist_config(*fields, **extra):
+    checklist = {"fields": list(fields), **GOAL, **extra}
+    return {"speakers": SPEAKERS, "modes": ["speakers", "checklist"], "checklist": checklist}
+
+
+def test_a_checklist_shaped_like_verbatims_is_accepted_unchanged():
+    cfg = checklist_config(
+        {"name": "present", "label": "Present", "help": "takes part live", "type": "bool", "required": True,
+         "draft_label": "present", "options": YES_NO},
+        {"name": "venue", "label": "Format", "help": "of this recording", "type": "enum", "required": True,
+         "differs_only_if": "present", "prompt": "Pick one.",
+         "options": [{"value": v, "label": v, "key": str(i + 3), "help": "h"} for i, v in enumerate(["talk", "panel"])]},
+        goal={"count": 5, "help": "recordings verified so far"}, accept_when_true=["present"],
+        notes_placeholder="anything odd")
+    assert normalize_config(cfg)["checklist"] == cfg["checklist"]
+
+
+def opts(*values, keys="abcd"):
+    return [{"value": v, "label": str(v), "key": k} for v, k in zip(values, keys)]
+
+
+@pytest.mark.parametrize("field, expect", [
+    ({"label": "x", "type": "bool", "options": YES_NO}, "needs a name"),
+    ({"name": "a", "type": "bool", "options": YES_NO}, "'a' needs a label"),
+    ({"name": "a", "label": "A", "type": "yesno", "options": YES_NO}, "has type 'yesno'"),
+    ({"name": "a", "label": "A", "type": "text", "required": True}, "has type 'text'; the page answers only"),
+    ({"name": "a", "label": "A", "type": "bool", "required": "yes", "options": YES_NO},
+     "`required` must be true or false"),
+    ({"name": "a", "label": "A", "type": "enum", "options": "ab"}, "must be a non-empty list of objects"),
+    ({"name": "a", "label": "A", "type": "enum", "options": ["a", "b"]}, "must be a non-empty list of objects"),
+    ({"name": "a", "label": "A", "type": "bool"}, "must be a non-empty list of objects"),
+    ({"name": "a", "label": "A", "type": "enum", "options": [{"value": 1, "label": "One"}]},
+     "a value, a label and a one-character key"),
+    ({"name": "a", "label": "A", "type": "enum", "options": [{"label": "One", "key": "o"}]},
+     "a value, a label and a one-character key"),
+    ({"name": "a", "label": "A", "type": "enum", "options": opts(1, keys=["yes"])}, "one-character key"),
+    ({"name": "a", "label": "A", "type": "enum", "options": opts(1, keys=[" "])}, "one-character key"),
+    ({"name": "a", "label": "A", "type": "bool", "options": opts("yes", "no")}, "value must be true or false"),
+    ({"name": "a", "label": "A", "type": "enum", "options": opts(1, keys="j")}, "already uses"),
+    ({"name": "a", "label": "A", "type": "enum", "options": opts(1, keys="1")}, "already uses"),
+    *[({"name": n, "label": "A", "type": "bool", "options": YES_NO}, "a saved label already uses")
+      for n in ("notes", "checked_by", "key", "updated_at", "draft_shown", "answers_before_draft")],
+])
+def test_a_checklist_field_the_page_cannot_use_is_refused(field, expect):
+    with pytest.raises(SystemExit, match=expect):
+        normalize_config(checklist_config(field))
+
+
+BOOL = {"name": "ok", "label": "OK", "type": "bool", "options": YES_NO}
+
+
+@pytest.mark.parametrize("extra, expect", [
+    ({"goal": None}, "needs `goal`"),
+    ({"goal": {"count": "5", "help": "h"}}, "needs `goal`"),
+    ({"goal": {"count": True, "help": "h"}}, "needs `goal`"),
+    ({"goal": {"count": -1, "help": "h"}}, "needs `goal`"),
+    ({"goal": {"count": 5}}, "needs `goal`"),
+    ({"accept_when_true": None}, "needs `accept_when_true`"),
+    ({"accept_when_true": ["other"]}, "needs `accept_when_true`"),
+    ({"accept_when_true": "ok"}, "needs `accept_when_true`"),
+])
+def test_the_checklist_goal_and_acceptance_the_page_reads_are_checked(extra, expect):
+    with pytest.raises(SystemExit, match=expect):
+        normalize_config(checklist_config(BOOL, **extra))
+    enum = {"name": "pick", "label": "Pick", "type": "enum", "options": opts(1, 2)}
+    with pytest.raises(SystemExit, match="needs `accept_when_true`"):  # an enum field is never true
+        normalize_config(checklist_config(BOOL, enum, accept_when_true=["pick"]))
+
+
+def test_checklist_names_and_keys_are_unique_across_fields_and_there_is_one_field():
+    with pytest.raises(SystemExit, match="needs a name of its own"):
+        normalize_config(checklist_config(BOOL, BOOL))
+    with pytest.raises(SystemExit, match="'Y' is one the page already uses"):
+        normalize_config(checklist_config({**BOOL, "name": "a"},
+                                          {**BOOL, "name": "b", "options": [{"value": True, "label": "Y", "key": "Y"}]}))
+    with pytest.raises(SystemExit, match="at least one field"):
+        normalize_config(checklist_config())
+
+
+def test_a_malformed_checklist_in_a_manifest_is_a_named_error_not_a_crash(tmp_path):
+    ds = Dataset.create(tmp_path / "d", "demo", "c", {"speakers": SPEAKERS})
+    manifest = {**ds.manifest, "modes": ["speakers", "checklist"],
+                "checklist": {"fields": [{"name": "a", "label": "A", "type": "enum", "options": "ab"}], **GOAL}}
+    assert any("must be a non-empty list of objects" in e for e in manifest_errors(manifest))

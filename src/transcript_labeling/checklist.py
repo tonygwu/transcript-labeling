@@ -2,7 +2,9 @@
 
 A spec is `{"fields": [...], "goal": ..., "accept_when_true": [...], ...}`. Each
 field has a `name`, a `type` (`bool`, `enum` or free text), a `label`, whether it
-is `required`, and `options` with the keys the page binds to them.
+is `required`, and `options` with the keys the page binds to them. A dataset's
+checklist takes only `bool` and `enum` fields (`dataset3.checklist_errors`), because
+the page draws option buttons only; `answered` still knows free text, as verbatim's did.
 
 Model drafts stay hidden until every required question has an answer, so those
 answers are blind. The first answer changed with the draft on screen marks the

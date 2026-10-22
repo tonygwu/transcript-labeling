@@ -27,7 +27,7 @@ import re
 from pathlib import Path
 
 from . import __version__
-from .checklist import RESERVED_KEYS
+from .checklist import RESERVED_KEYS, STICKY_LABEL_FIELDS
 from .dataset import MODE_SECTION, MODES
 from .registry import NAME
 from .spans import quote_review, sidecar_path
@@ -91,10 +91,7 @@ def normalize_config(config: dict) -> dict:
         if key in config and not isinstance(config[key], kind):
             raise SystemExit(f"REFUSING: {key} has the wrong type ({type(config[key]).__name__})")
     if checklist:
-        for field in checklist.get("fields", []):
-            for option in field.get("options", []):
-                if str(option.get("key", "")).lower() in RESERVED_KEYS | set(keys):
-                    raise SystemExit(f"REFUSING: checklist key {option['key']!r} is one the page already uses")
+        checklist_errors(checklist, RESERVED_KEYS | set(keys))
     reveal = config.get("reveal", "after_answer")
     if reveal not in REVEAL:
         raise SystemExit(f"REFUSING: reveal {reveal!r} must be one of {REVEAL}")
@@ -122,6 +119,69 @@ def normalize_config(config: dict) -> dict:
             "mixed_answer": mixed, "label_template": config.get("label_template"), "checklist": checklist,
             "reveal": reveal, "media": media, "project_help": config.get("project_help", {}),
             "files": files, **({"tags": tags} if tags else {})}
+
+
+#: The checklist field types the page can answer. It draws option buttons only, so a
+#: free-text field would never be answered and every item would stay incomplete.
+FIELD_TYPES = ("bool", "enum")
+#: Names a saved checklist label already uses beside the answers; a field may not take one.
+LABEL_RECORD_KEYS = ("key", "checked_by", "notes", "updated_at", *STICKY_LABEL_FIELDS)
+
+
+def checklist_errors(checklist: dict, taken: set[str]) -> None:
+    """Refuse a checklist the page or the labels export could not use.
+
+    Checks what they read: `goal` ({count, help}) and `accept_when_true` (bool field
+    names), and each field's `name`, `label`, `type`, `required` and options, each
+    option with a value, a label and a one-character key. Other keys (help text,
+    draft labels) pass through. Not yet checked: `draft_fields`, which the page reads
+    when an item carries a model draft. `taken` holds the keys the page already binds.
+    """
+    fields = checklist["fields"]
+    if not fields:
+        raise SystemExit("REFUSING: a checklist needs at least one field")
+    names, keys, bools = set(), set(), set()
+    for i, field in enumerate(fields):
+        name = field.get("name")
+        if not isinstance(name, str) or not name or name in names:
+            raise SystemExit(f"REFUSING: checklist field {i} needs a name of its own, got {name!r}")
+        if name in LABEL_RECORD_KEYS:
+            raise SystemExit(f"REFUSING: checklist field name {name!r} is one a saved label already uses "
+                             f"({list(LABEL_RECORD_KEYS)})")
+        names.add(name)
+        if not isinstance(field.get("label"), str) or not field["label"].strip():
+            raise SystemExit(f"REFUSING: checklist field {name!r} needs a label")
+        if field.get("type") not in FIELD_TYPES:
+            raise SystemExit(f"REFUSING: checklist field {name!r} has type {field.get('type')!r}; "
+                             f"the page answers only {list(FIELD_TYPES)}")
+        if not isinstance(field.get("required", False), bool):
+            raise SystemExit(f"REFUSING: checklist field {name!r}: `required` must be true or false")
+        options = field.get("options")
+        if not isinstance(options, list) or not options or not all(isinstance(o, dict) for o in options):
+            raise SystemExit(f"REFUSING: checklist field {name!r}: `options` must be a non-empty list of objects")
+        for option in options:
+            key, label = option.get("key"), option.get("label")
+            if (not isinstance(key, str) or len(key) != 1 or not key.strip() or not isinstance(label, str)
+                    or "value" not in option):
+                raise SystemExit(f"REFUSING: checklist field {name!r}: each option needs a value, a label "
+                                 f"and a one-character key, got {option!r}")
+            if field["type"] == "bool" and not isinstance(option["value"], bool):
+                raise SystemExit(f"REFUSING: checklist field {name!r} is a bool question, so each option's "
+                                 f"value must be true or false, got {option['value']!r}")
+            if key.lower() in taken | keys:
+                raise SystemExit(f"REFUSING: checklist key {key!r} is one the page already uses")
+            keys.add(key.lower())
+        if field["type"] == "bool":
+            bools.add(name)
+    goal = checklist.get("goal")
+    if not (isinstance(goal, dict) and type(goal.get("count")) is int and goal["count"] >= 0
+            and isinstance(goal.get("help"), str)):
+        raise SystemExit(f"REFUSING: a checklist needs `goal`: {{count, help}}, the items to verify and why; "
+                         f"got {goal!r}")
+    accept = checklist.get("accept_when_true")
+    if not (isinstance(accept, list) and all(isinstance(f, str) and f in bools for f in accept)):
+        raise SystemExit(f"REFUSING: a checklist needs `accept_when_true`, a list of its bool field names; "
+                         f"got {accept!r}")
 
 
 def manifest_errors(manifest: dict) -> list[str]:
