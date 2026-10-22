@@ -25,6 +25,7 @@ import hmac
 import json
 import re
 import secrets
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 from .home import Home, private_write
@@ -57,16 +58,18 @@ def _stamp(t: datetime) -> str:
 
 class Auth:
     def __init__(self, home: Home):
-        if not home.root.is_dir():
-            raise SystemExit(f"REFUSING: {home.root} does not exist; run `tl init`")
+        home.require()
         self.home = home
 
+    @contextmanager
     def _locked(self):
         # Checked on every use, not only at start: a home deleted while the server runs
-        # must not be remade by the lock below.
-        if not self.home.root.is_dir():
-            raise SystemExit(f"REFUSING: {self.home.root} does not exist; run `tl init`")
-        return locked(self.home.root / "sessions.lock")
+        # must not be remade by the lock below. Checked again under the lock, because
+        # the home may have gone while this call waited for it.
+        self.home.require()
+        with locked(self.home.root / "sessions.lock"):
+            self.home.require()
+            yield
 
     def _load(self) -> dict:
         path = self.home.sessions_path

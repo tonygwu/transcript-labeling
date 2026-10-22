@@ -77,10 +77,11 @@ class Registry:
         A home that is gone is refused, never made again: `tl init` makes it private
         (0700) with its token, and a silently remade one would be neither.
         """
-        if not self.home.root.is_dir():
-            raise SystemExit(f"REFUSING: {self.home.root} does not exist; run `tl init`")
+        self.home.require()
         with open(self.home.root / "registry.lock", "a") as fh:
             fcntl.flock(fh, fcntl.LOCK_EX)
+            # Again under the lock: the home may have gone while this call waited for it.
+            self.home.require()
             try:
                 yield
             finally:

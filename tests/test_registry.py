@@ -220,6 +220,68 @@ def test_a_deleted_home_is_refused_not_made_again(reg):
     assert not reg.home.root.exists()
 
 
+def test_a_home_made_again_by_other_code_is_refused(reg):
+    import shutil
+    from transcript_labeling.auth import Auth
+    from transcript_labeling.store import locked
+    auth = Auth(reg.home)
+    shutil.rmtree(reg.home.root)
+    old = os.umask(0o022)  # the usual umask, so missing parents are made 0755
+    try:
+        with locked(reg.home.state_dir("p", "d") / ".tl.lock"):  # makes every missing parent
+            pass
+    finally:
+        os.umask(old)
+    assert reg.home.root.is_dir()
+    with pytest.raises(SystemExit, match="mode 0o755, open to other users"):
+        reg.create_project("p", privacy="local-only", writers=["o/r"])
+    with pytest.raises(SystemExit, match="mode 0o755"):
+        auth.mint_code("/")
+    os.chmod(reg.home.root, 0o700)  # private, but still without its token
+    with pytest.raises(SystemExit, match="has no token; run `tl init`"):
+        reg.create_project("p", privacy="local-only", writers=["o/r"])
+    with pytest.raises(SystemExit, match="has no token"):
+        auth.mint_code("/")
+    reg.home.init()
+    assert reg.create_project("p", privacy="local-only", writers=["o/r"])
+    assert auth.mint_code("/")
+
+
+def test_a_home_open_to_the_group_or_not_a_folder_is_refused(reg, tmp_path):
+    from transcript_labeling.home import Home
+    os.chmod(reg.home.root, 0o750)  # the owner's group can hold other users of this Mac
+    with pytest.raises(SystemExit, match="mode 0o750, open to other users"):
+        reg.create_project("p", privacy="local-only", writers=["o/r"])
+    (tmp_path / "file").write_text("x")
+    with pytest.raises(SystemExit, match="is not a folder"):
+        Registry(Home(tmp_path / "file")).create_project("p", privacy="local-only", writers=["o/r"])
+    with pytest.raises(SystemExit, match="does not exist; run `tl init`"):
+        Registry(Home(tmp_path / "file" / "h")).create_project("p", privacy="local-only", writers=["o/r"])
+
+
+def test_a_home_deleted_while_a_call_waits_for_its_lock_is_refused(reg, monkeypatch):
+    import fcntl
+    import shutil
+    from transcript_labeling.auth import Auth
+    auth = Auth(reg.home)
+    real = fcntl.flock
+
+    def flock_then_delete(fd, op):  # another process deletes the home while this one waits
+        real(fd, op)
+        if not op & fcntl.LOCK_UN:
+            shutil.rmtree(reg.home.root, ignore_errors=True)
+    monkeypatch.setattr(fcntl, "flock", flock_then_delete)
+    with pytest.raises(SystemExit, match="does not exist; run `tl init`"):
+        reg.create_project("p", privacy="local-only", writers=["o/r"])
+    assert not reg.home.root.exists()
+    monkeypatch.setattr(fcntl, "flock", real)
+    reg.home.init()
+    auth = Auth(reg.home)
+    monkeypatch.setattr(fcntl, "flock", flock_then_delete)
+    with pytest.raises(SystemExit, match="does not exist; run `tl init`"):
+        auth.mint_code("/")
+
+
 def test_state_folders_are_private(tmp_path):
     import stat
     from transcript_labeling.home import private_write

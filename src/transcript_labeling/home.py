@@ -84,6 +84,27 @@ class Home:
     def logs_dir(self) -> Path:
         return self.root / "logs"
 
+    def require(self) -> None:
+        """Refuse a home that `tl init` did not make: missing, not a folder, open to its
+        group or to others, or without its token.
+
+        Checking only that the folder exists is not enough. Code that makes missing
+        parent folders (a lock, a log) would make a deleted home again, with the default
+        mode and no token, and every later check would pass.
+        """
+        try:
+            st = self.root.stat()
+        except (FileNotFoundError, NotADirectoryError):
+            raise SystemExit(f"REFUSING: {self.root} does not exist; run `tl init`") from None
+        if not stat.S_ISDIR(st.st_mode):
+            raise SystemExit(f"REFUSING: {self.root} is not a folder")
+        mode = stat.S_IMODE(st.st_mode)
+        if mode & 0o077:
+            raise SystemExit(f"REFUSING: {self.root} is mode {oct(mode)}, open to other users; it must be "
+                             f"0700. If it was deleted and made again, run `tl init`")
+        if not self.token_path.is_file():
+            raise SystemExit(f"REFUSING: {self.root} has no token; run `tl init`")
+
     # ------------------------------------------------------------ setup
     def init(self, port: int = DEFAULT_PORT, operator_id: str = "operator") -> list[str]:
         """Create the folder, config and token if missing. Returns what it created."""
