@@ -47,6 +47,10 @@ CONFIG_KEYS = {"title", "modes", "speakers", "unclear", "mixed_answer", "label_t
                "media", "project_help", "files", "tags"}
 
 
+#: The settings `normalize_config` always returns, so every manifest `tl` writes holds them.
+WRITTEN_KEYS = CONFIG_KEYS - {"tags"}
+
+
 def normalize_config(config: dict) -> dict:
     """A dataset config with every default filled in. A config that cannot work stops the caller."""
     if not isinstance(config, dict):
@@ -200,16 +204,22 @@ def manifest_errors(manifest: dict) -> list[str]:
     for k in ("name", "project"):
         if not isinstance(manifest[k], str) or not NAME.fullmatch(manifest[k]):
             errs.append(f"{k} {manifest[k]!r} must match {NAME.pattern}")
-    try:
-        normal = normalize_config({k: manifest[k] for k in CONFIG_KEYS if k in manifest})
-    except SystemExit as exc:
-        errs.append(str(exc))
+    # Named before any default is filled in: a default can clash with the rest of the
+    # manifest (a missing `modes` defaults to speakers mode) and hide which one is gone.
+    absent = sorted(WRITTEN_KEYS - set(manifest))
+    if absent:
+        errs.append(f"settings {absent} are missing; `tl` writes every setting")
     else:
-        # `tl` writes every setting in full, and the dataset code reads them from the
-        # manifest itself, so a missing or shortened one would fail later with a KeyError.
-        short = sorted(k for k, v in normal.items() if k not in manifest or manifest[k] != v)
-        if short:
-            errs.append(f"settings {short} are missing or not written in full; `tl` writes every setting")
+        try:
+            normal = normalize_config({k: manifest[k] for k in CONFIG_KEYS if k in manifest})
+        except SystemExit as exc:
+            errs.append(str(exc))
+        else:
+            # `tl` writes every setting in full, and the dataset code reads them from the
+            # manifest itself, so a shortened one would fail later with a KeyError.
+            short = sorted(k for k, v in normal.items() if manifest[k] != v)
+            if short:
+                errs.append(f"settings {short} are not written in full; `tl` writes every setting in full")
     if not isinstance(manifest["items"], dict) or not all(
             isinstance(v, dict) and isinstance(v.get("text_sha256"), str) and type(v.get("token_count")) is int
             for v in manifest["items"].values()):

@@ -274,17 +274,16 @@ def test_a_manifest_missing_a_setting_is_refused_when_opened(tmp_path, key):
     assert manifest_errors(ds.manifest) == []
     manifest = {k: v for k, v in ds.manifest.items() if k != key}
     (tmp_path / "d" / "manifest.json").write_text(json.dumps(manifest))
-    # Two were refused before this check, each with its own message.
-    expect = {"speakers": "needs `speakers`", "files": "missing `files`"}.get(
-        key, rf"settings \['{key}'\] are missing or not written in full")
+    # `files` was refused before this check, with its own message.
+    expect = "missing `files`" if key == "files" else rf"settings \['{key}'\] are missing; `tl` writes"
     with pytest.raises(SystemExit, match=expect):
         Dataset.open(tmp_path / "d")
 
 
 def test_a_manifest_with_files_written_short_is_refused(tmp_path):
     ds = Dataset.create(tmp_path / "d", "demo", "c", {"speakers": SPEAKERS})
-    assert any("['files'] are missing" in e for e in manifest_errors({**ds.manifest, "files": {}}))
-    assert any("['files'] are missing" in e
+    assert any("['files'] are not written in full" in e for e in manifest_errors({**ds.manifest, "files": {}}))
+    assert any("['files'] are not written in full" in e
                for e in manifest_errors({**ds.manifest, "files": {"answers": "human_answers.json"}}))
 
 
@@ -332,3 +331,27 @@ def test_an_item_written_under_a_latin_1_locale_reads_back(tmp_path):
     out = subprocess.run([sys.executable, "-c", code, str(tmp_path)], env=env, capture_output=True, text=True)
     assert out.returncode == 0, out.stderr[-500:]
     assert out.stdout.split()[-1] == "True"
+
+
+@pytest.mark.parametrize("modes, key", [(["captions"], "modes"), (["checklist", "speakers"], "modes"),
+                                        (["speakers"], "unclear")])
+def test_a_missing_setting_is_named_even_when_its_default_would_clash(tmp_path, modes, key):
+    # Each default clashes: speakers mode with no speakers, speakers mode with no
+    # checklist mode beside a checklist, and the unclear key u that a speaker holds.
+    speakers = [] if modes == ["captions"] else [{"id": "ann", "label": "Ann", "key": "u"}]
+    config = {"speakers": speakers, "modes": modes, "unclear": {"id": "unsure", "label": "Unsure", "key": "x"}}
+    if "checklist" in modes:
+        config["checklist"] = {"fields": [{"name": "ok", "label": "OK", "type": "bool",
+                                           "options": [{"value": True, "label": "Y", "key": "y"},
+                                                       {"value": False, "label": "N", "key": "n"}]}],
+                               "goal": {"count": 1, "help": "h"}, "accept_when_true": ["ok"]}
+    ds = Dataset.create(tmp_path / "d", "demo", "c", config)
+    assert manifest_errors({k: v for k, v in ds.manifest.items() if k != key}) == \
+        [f"settings ['{key}'] are missing; `tl` writes every setting"]
+
+
+def test_a_missing_setting_does_not_hide_a_broken_items_map(tmp_path):
+    ds = Dataset.create(tmp_path / "d", "demo", "c", {"speakers": SPEAKERS})
+    manifest = {**{k: v for k, v in ds.manifest.items() if k != "title"}, "items": {"a/b": 5}}
+    assert manifest_errors(manifest) == ["settings ['title'] are missing; `tl` writes every setting",
+                                         "items must map each key to {text_sha256, token_count}"]
