@@ -126,8 +126,7 @@ class Home:
         if mode & 0o077:
             raise SystemExit(f"REFUSING: {self.root} is mode {oct(mode)}, open to other users; it must be "
                              f"0700. If it was deleted and made again, run `tl init`")
-        if not self.token_path.is_file():
-            raise SystemExit(f"REFUSING: {self.root} has no token; run `tl init`")
+        self._token_stat()
         tree = git_work_tree_above(self.root)
         if tree is not None:
             raise SystemExit(f"REFUSING: {self.root} is inside the git work tree {tree}; move the service home "
@@ -192,18 +191,24 @@ class Home:
             raise SystemExit(f"REFUSING: {self.config_path}: port must be an integer and allowed_hosts a list")
         return cfg
 
-    def token(self) -> str:
-        """The bearer token. A token file other users could read, or one that is not a
-        readable UTF-8 file, stops the caller with a refusal that names it."""
+    def _token_stat(self) -> os.stat_result:
+        """The token file's stat, or a refusal that says what to do: a missing token is
+        made by `tl init`, but anything else in its place must be moved aside first,
+        because `tl init` keeps whatever is there."""
         try:
             st = self.token_path.stat()
         except FileNotFoundError:
             raise SystemExit(f"REFUSING: {self.token_path} does not exist; run `tl init`") from None
         except OSError as e:  # a loop of symlinks, a folder it may not enter
             raise SystemExit(f"REFUSING: {self.token_path} cannot be checked: {e.strerror}") from None
-        if not stat.S_ISREG(st.st_mode):  # `tl init` keeps whatever is there, so it must be moved first
+        if not stat.S_ISREG(st.st_mode):
             raise SystemExit(f"REFUSING: {self.token_path} is not a file; move it aside and run `tl init`")
-        mode = stat.S_IMODE(st.st_mode)
+        return st
+
+    def token(self) -> str:
+        """The bearer token. A token file other users could read, or one that is not a
+        readable UTF-8 file, stops the caller with a refusal that names it."""
+        mode = stat.S_IMODE(self._token_stat().st_mode)
         if mode & 0o077:
             raise SystemExit(f"REFUSING: {self.token_path} is mode {oct(mode)}; it must be 0600")
         try:

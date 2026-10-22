@@ -55,6 +55,8 @@ def test_a_token_that_is_not_a_utf_8_file_is_refused_by_name(tmp_path):
     home.token_path.mkdir(mode=0o700)
     with pytest.raises(SystemExit, match="token is not a file; move it aside and run `tl init`"):
         home.token()
+    with pytest.raises(SystemExit, match="token is not a file; move it aside"):
+        home.require()  # the per-use check gives the same advice: `tl init` keeps a folder
     home.token_path.rmdir()
     os.mkfifo(home.token_path, 0o600)  # reading a named pipe would wait for a writer forever
     with pytest.raises(SystemExit, match="token is not a file"):
@@ -267,9 +269,9 @@ def test_a_home_made_again_by_other_code_is_refused(reg):
     with pytest.raises(SystemExit, match="mode 0o755"):
         auth.mint_code("/")
     os.chmod(reg.home.root, 0o700)  # private, but still without its token
-    with pytest.raises(SystemExit, match="has no token; run `tl init`"):
+    with pytest.raises(SystemExit, match="token does not exist; run `tl init`"):
         reg.create_project("p", privacy="local-only", writers=["o/r"])
-    with pytest.raises(SystemExit, match="has no token"):
+    with pytest.raises(SystemExit, match="token does not exist"):
         auth.mint_code("/")
     reg.home.init()
     assert reg.create_project("p", privacy="local-only", writers=["o/r"])
