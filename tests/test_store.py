@@ -461,3 +461,12 @@ def test_a_lock_whose_file_was_deleted_while_waiting_is_taken_on_a_new_file(tmp_
     monkeypatch.setattr(fcntl, "flock", flock_then_delete)
     with store.locked(path):
         assert len(calls) == 2 and calls[1] == os.stat(path).st_ino
+
+
+def test_an_event_line_holding_a_unicode_line_separator_reads_back(tmp_path):
+    from transcript_labeling.store import EventLog
+    log = EventLog(tmp_path / "events.jsonl")
+    for who in ("Jane\u2028Roe", "Jo\u2029Doe", "Al\x85Bee"):
+        log.append("answer", "k", who, "browser", None)
+    log.append("note", "k", "operator", "browser", None)
+    assert [x["principal"] for x in log.read()] == ["Jane\u2028Roe", "Jo\u2029Doe", "Al\x85Bee", "operator"]

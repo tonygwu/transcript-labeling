@@ -374,7 +374,9 @@ class EventLog:
         except UnicodeDecodeError:
             raise SystemExit(f"REFUSING: {self.path} is not UTF-8 text") from None
         lines = []
-        for n, x in enumerate(text.splitlines(), 1):
+        # Split on "\n" alone: append writes U+2028, U+2029 and U+0085 unescaped, and
+        # splitlines() would cut a line at each of them.
+        for n, x in enumerate(text.split("\n"), 1):
             if not x.strip():
                 continue
             try:
