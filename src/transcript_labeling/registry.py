@@ -209,6 +209,22 @@ class Registry:
             return Path(os.path.realpath(entry["git"]["checkout"]))
         return Path(os.path.realpath(self.home.data_dir(name)))
 
+    def remove_project(self, name: str) -> None:
+        """Forget a project whose creation failed. Refuses one that holds datasets; deletes no folder."""
+        with self.locked():
+            reg = self.load()
+            if reg["projects"].get(name, {}).get("datasets"):
+                raise SystemExit(f"REFUSING: project {name!r} holds datasets; it is not removed")
+            reg["projects"].pop(name, None)
+            self._save(reg)
+
+    def remove_dataset(self, project: str, dataset: str) -> None:
+        """Forget a dataset whose creation failed. Its folder is left as it is, never deleted."""
+        with self.locked():
+            reg = self.load()
+            reg["projects"][project]["datasets"].pop(dataset, None)
+            self._save(reg)
+
     def dataset_dir(self, project: str, dataset: str) -> Path:
         p = self.project(project)
         if dataset not in p["datasets"]:

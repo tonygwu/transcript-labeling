@@ -33,6 +33,12 @@ PATH; without it those tests fail with the install command, never skip.
 `.python-version` pins 3.12, the oldest version the package supports and the one
 verbatim-index runs, so the gate catches code that only works on a newer Python.
 
+The browser check is outside the gate because it needs Playwright and Chromium:
+`uv run --group browser pytest -m browser`. Run it after any change to the page's
+JavaScript or CSS, look at the screenshots it writes, and say in the commit
+whether it ran. Without the `browser` group it fails with "Playwright is
+missing"; it never skips.
+
 ## Runtime rules
 
 - **Standard library only at runtime.** `dependencies = []` in `pyproject.toml`

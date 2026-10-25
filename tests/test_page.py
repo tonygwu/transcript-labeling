@@ -1,10 +1,11 @@
-"""The labeling page, run by node against a stub DOM.
+"""The labeling page module, run by node against a stub DOM and a stub server.
 
 Ported from verbatim-index `scripts/test_annotations_page.py` (SHADOW, RENDER and
-MODES) with a synthetic checklist in place of the pundits one, plus a golden check
-that this package renders exactly the page verbatim's renderer does.
+MODES), now against the service's page: an empty shell whose module script
+(`page/assets.build_app_js`) fetches its data with the session header.
 
-  GOLDEN     the page rendered here equals verbatim's, byte for byte
+  SHELL      the module loads its data from api/page with the session header, and a
+             401 stops it with a login message
   SHADOW     no function parameter hides a module-level binding its own body uses
   RENDER     flagged recordings come first, each under its own section; the draft
              stays hidden until every question has an answer, so those answers carry
@@ -12,10 +13,12 @@ that this package renders exactly the page verbatim's renderer does.
              answer (not notes) carries draft_shown, with the blind answers kept
              beside it once (answers_before_draft); a page without drafts has no
              sections
-  MODES      the page follows its session: a session without the checklist mode shows
-             no checklist and binds no checklist key; a recording tagged with two
-             projects shows both tags, and the page offers a project filter; a
-             captions-only session never claims a recording is done
+  MODES      the page follows its dataset: no checklist mode, no checklist and no
+             checklist key; two project tags show and filter; a captions-only dataset
+             never claims an item is done
+  GENERIC    a dataset item with no checklist and no passages opens its transcript,
+             counts as done only when marked done, and links no media unless the
+             dataset names a media URL
 """
 from __future__ import annotations
 
@@ -23,13 +26,10 @@ import json
 import re
 import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
 
-from transcript_labeling.page import page as V
-
-FIX = Path(__file__).resolve().parent / "fixtures" / "golden_v2"
+from transcript_labeling.page.assets import asset_bytes, build_app_js
 
 #: A stub page for node: enough DOM for the script to render, a local server that
 #: answers with SAVED and records each save, the page opened at START when given,
@@ -40,25 +40,36 @@ const mk = id => nodes[id] ||= {id, innerHTML: "", textContent: "", className: "
   setAttribute(k, v) { this[k] = v; }, querySelectorAll() { return []; }, querySelector() { return null; },
   addEventListener() {}, scrollIntoView() {}, closest() { return null; }, dataset: {}};
 let keydown = null;
-const posts = [];
+const posts = [], fetched = [];
 global.document = {getElementById: mk, querySelector() { return null; }, querySelectorAll() { return []; },
   addEventListener(type, fn) { if (type === "keydown") keydown = fn; }, createElement: () => mk("x" + Math.random())};
-global.window = {open() {}, addEventListener() {}, removeEventListener() {}};
+global.localStorage = {getItem: k => k === "tl-session" ? "sess-1" : null};
+global.window = {open() {}, addEventListener() {}, removeEventListener() {},
+  fetch: async (url, opt) => {
+    fetched.push([url, ((opt || {}).headers || {})["X-TL-Session"]]);
+    if (url === "api/page") return PAGE_STATUS === 200 ? {ok: true, status: 200, json: async () => DATA}
+                                                       : {ok: false, status: PAGE_STATUS, json: async () => ({})};
+    if (url === "api/answers") return {ok: true, json: async () => SAVED};
+    if (url === "api/answer" || url === "api/note" || url === "api/done" || url === "api/reveal") {
+      posts.push({url, ...JSON.parse(opt.body)});
+      if (STALE) return {ok: false, status: 409, json: async () => ({error: "changed outside", stale: true})};
+      return {ok: true, json: async () => ({ok: true})}; }
+    throw new Error("unexpected fetch " + url);
+  }};
 global.location = {hash: START ? "#" + encodeURIComponent(START) : ""};
 global.history = {replaceState() {}};
 global.CSS = {escape: s => s};
-global.fetch = async (url, opt) => {
-  if (url === "api/answers") return {ok: true, json: async () => SAVED};
-  if (url === "api/answer") { posts.push(JSON.parse(opt.body)); return {ok: true, json: async () => ({ok: true})}; }
-  throw new Error("unexpected fetch " + url);
-};
 let threw = "";
-try { new Function(SCRIPT)(); } catch (e) { threw = String(e && e.stack || e).split("\n")[0]; }
+(async () => {
+  try { await (new Function("return (async () => {\n" + SCRIPT + "\n})()"))(); }
+  catch (e) { threw = String(e && e.stack || e).split("\n")[0]; }
+})();
 setTimeout(() => {
   const list = nodes.list && nodes.list.innerHTML, detail = nodes.detail && nodes.detail.innerHTML;
   const projects = nodes.projects && !nodes.projects.hidden ? nodes.projects.innerHTML : "";
   const keyhelp = nodes.keyhelp && nodes.keyhelp.innerHTML, count = nodes.count && nodes.count.textContent;
-  const status = nodes.status && nodes.status.textContent;
+  const status = nodes.status && nodes.status.textContent, banner = nodes.banner && !nodes.banner.hidden ? nodes.banner.textContent : "";
+  const title = nodes.title && nodes.title.textContent;
   const allPressed = String(nodes["f-all"] && nodes["f-all"]["aria-pressed"]);
   let picked = "";
   if (PICK && nodes.projects && nodes.projects.onclick) {
@@ -71,20 +82,47 @@ setTimeout(() => {
   }
   // The page saves notes 700 ms after the last keystroke.
   if (NOTES !== null && nodes.notes && nodes.notes.oninput) { nodes.notes.value = NOTES; nodes.notes.oninput(); }
-  if (keydown && KEY) keydown({key: KEY, target: {tagName: "BODY", closest: () => null}, preventDefault() {}});
-  setTimeout(() => console.log(JSON.stringify({list, detail, posts, threw, projects, keyhelp, count, picked, status, allPressed})),
-             NOTES !== null ? 800 : 20);
-}, 20);
+  // Keys are pressed 20 ms apart, so each save settles before the next press.
+  const keys = Array.isArray(KEY) ? KEY : KEY ? [KEY] : [];
+  keys.forEach((k, i) => setTimeout(() => keydown && keydown({key: k, target: {tagName: "BODY", closest: () => null},
+                                                                preventDefault() {}}), 20 * i));
+  setTimeout(() => console.log(JSON.stringify({list, detail, posts, threw, projects, keyhelp, count, picked, status,
+                                               allPressed, banner, title, fetched,
+                                               bannerAfter: nodes.banner && !nodes.banner.hidden ? nodes.banner.textContent : ""})),
+             (NOTES !== null ? 800 : 30) + 20 * keys.length);
+}, 30);
 """
 
-CHECKLIST = json.loads((FIX / "data.json").read_text())["session"]["checklist"]
+CHECKLIST = {
+    "fields": [
+        {"name": "present", "label": "Subject present", "help": "Takes part live", "type": "bool", "required": True,
+         "draft_label": "subject present",
+         "options": [{"value": True, "label": "Yes", "key": "y", "cls": "y"},
+                     {"value": False, "label": "No", "key": "n", "cls": "n"}]},
+        {"name": "format", "label": "Format", "help": "of this recording", "type": "enum", "required": True,
+         "draft_label": "format", "differs_only_if": "present", "prompt": "Pick the format that fills most of it.",
+         "options": [{"value": v, "label": v, "key": str(i + 1), "help": f"{v} help"}
+                     for i, v in enumerate(("solo", "conversation", "debate"))]},
+    ],
+    "notes_placeholder": "e.g. guest-only episode",
+    "accept_when_true": ["present"],
+    "goal": {"count": 2, "help": "recordings verified so far"},
+    "draft_fields": [["present", "subject present"], ["format", "format"]],
+}
 HELP = {"alpha": "the alpha judges credited them to this person", "beta": "the beta site credits them to this person"}
+#: verbatim's configuration: the subject, someone else, unsure; both for a mixed quote.
+LEGACY_SPEAKERS = [{"id": "subject", "label": "{person}", "key": "s"}, {"id": "other", "label": "Someone else",
+                                                                         "key": "e"}]
+YOUTUBE = {"url": "https://www.youtube.com/watch?v={video_id}&t={t}s"}
 
 
-def session(projects=("alpha",), modes=("checklist", "speakers", "captions")) -> dict:
-    return {"name": "t", "projects": list(projects), "modes": list(modes),
+def session(projects=("alpha",), modes=("checklist", "speakers", "captions"), *, speakers=LEGACY_SPEAKERS,
+            media=YOUTUBE, mixed="both") -> dict:
+    return {"name": "t", "project": "demo", "title": "Demo dataset", "projects": list(projects), "modes": list(modes),
             "checklist": CHECKLIST if "checklist" in modes else None,
-            "project_help": {p: HELP.get(p, p + " help") for p in projects}}
+            "project_help": {p: HELP.get(p, p + " help") for p in projects}, "speakers": speakers,
+            "unclear": {"id": "unclear", "label": "Unsure", "key": "u"}, "mixed_answer": mixed,
+            "label_template": "{person}", "reveal": "after_answer", "media": media}
 
 
 def node() -> str:
@@ -94,44 +132,99 @@ def node() -> str:
     return path
 
 
-def run_page(rows, saved=None, sess=None, quote_rows=None, pick=None, filt=None, start=None, key="y", notes=None):
-    """The page's own script run by node on `rows`, starting from the `saved` answers; what it rendered and saved."""
-    page = V.render_page({"rows": rows, "quote_rows": quote_rows or [], "transcript_index": {},
-                          "session": sess or session()}, "t", "s")
-    script = page[page.index("<script>") + len("<script>"):page.rindex("</script>")]
-    # On stdin, not -e: a real page can pass the argument-length limit.
-    head = (f"const SCRIPT = {json.dumps(script)};\nconst SAVED = {json.dumps(saved or {'labels': {}, 'attribution': {}})};\n"
+VERSIONS = {"answers": "p1.0", "review": "p1.0"}
+
+
+def run_page(rows, saved=None, sess=None, quote_rows=None, pick=None, filt=None, start=None, key="y", notes=None,
+             page_status=200, index=None, stale=False):
+    """The page module run by node on `rows`, starting from the `saved` answers; what it rendered and saved."""
+    data = {"rows": rows, "quote_rows": quote_rows or [], "transcript_index": index or {},
+            "session": sess or session()}
+    saved = {"versions": VERSIONS, **(saved or {"labels": {}, "attribution": {}})}
+    head = (f"const SCRIPT = {json.dumps(build_app_js())};\nconst SAVED = {json.dumps(saved)};\n"
+            f"const DATA = {json.dumps(data)};\nconst PAGE_STATUS = {page_status};\n"
             f"const PICK = {json.dumps(pick)};\nconst FILTER = {json.dumps(filt)};\n"
-            f"const START = {json.dumps(start)};\nconst KEY = {json.dumps(key)};\nconst NOTES = {json.dumps(notes)};\n")
+            f"const START = {json.dumps(start)};\nconst KEY = {json.dumps(key)};\nconst NOTES = {json.dumps(notes)};\n"
+            f"const STALE = {json.dumps(stale)};\n")
     n = subprocess.run([node(), "-"], input=head + PAGE_HARNESS, capture_output=True, text=True, encoding="utf-8",
                        timeout=60)
     assert n.returncode == 0 and n.stdout.strip(), n.stderr[-600:]
     out = json.loads(n.stdout.strip().splitlines()[-1])
-    return {k: out.get(k) or ("" if k != "posts" else []) for k in
-            ("list", "detail", "posts", "threw", "projects", "keyhelp", "count", "picked", "status", "allPressed")}
+    return {k: out.get(k) or ("" if k not in ("posts", "fetched") else []) for k in
+            ("list", "detail", "posts", "threw", "projects", "keyhelp", "count", "picked", "status", "allPressed",
+             "banner", "title", "fetched", "bannerAfter")}
 
 
 def flat(s: str) -> str:
     return re.sub(r"\s+", " ", s)
 
 
-# ------------------------------------------------------------------ GOLDEN
+# ------------------------------------------------------------------ SHELL
 
-def test_the_page_rendered_here_equals_verbatims_byte_for_byte():
-    data = json.loads((FIX / "data.json").read_text(encoding="utf-8"))
-    got = V.render_page(data, "Annotations · alpha + beta", "Modes: checklist, speakers, captions. Saves as you go.")
-    assert got.encode("utf-8") == (FIX / "page.html").read_bytes()
-
-
-def test_a_checklist_key_the_page_already_binds_is_refused():
-    bad = {**CHECKLIST, "fields": [{**CHECKLIST["fields"][0], "options": [{"value": True, "label": "Y", "key": "J"}]}]}
-    with pytest.raises(SystemExit, match="already uses"):
-        V.render_page({"rows": [], "session": {**session(), "checklist": bad}}, "t", "s")
+def test_the_module_loads_its_data_with_the_session_and_titles_the_page():
+    r = run_page(ROWS)
+    assert r["threw"] == "" and r["title"] == "Demo dataset"
+    assert ["api/page", "sess-1"] in r["fetched"] and ["api/answers", "sess-1"] in r["fetched"]
+    assert all(sess == "sess-1" for _, sess in r["fetched"])
 
 
-def test_title_and_subtitle_are_escaped():
-    page = V.render_page({"rows": [], "session": session()}, "<b>T</b>", "a & b")
-    assert "<title>&lt;b&gt;T&lt;/b&gt;</title>" in page and "a &amp; b" in page
+def test_every_save_sends_back_the_versions_the_page_loaded():
+    r = run_page(ROWS)
+    assert r["posts"] and all(p["versions"] == VERSIONS for p in r["posts"])
+
+
+def test_a_stale_refusal_stops_saving_and_asks_for_a_reload():
+    r = run_page(ROWS, stale=True)
+    assert len(r["posts"]) == 1
+    r = run_page(ROWS, stale=True, key=["y", "n"])  # the second press comes after the refusal settles
+    assert len(r["posts"]) == 1, "the page kept saving after a stale refusal"
+    assert r["banner"] == ""  # before the save
+    assert "changed outside this page" in r["bannerAfter"] and "Reload the page" in r["bannerAfter"]
+
+
+def test_no_save_sends_checked_by():
+    # The server says who checked; the page never claims it.
+    r = run_page(ROWS)
+    assert r["posts"] and all("checked_by" not in json.dumps(p) for p in r["posts"])
+
+
+def test_a_session_without_its_speakers_config_stops_the_page():
+    sess = session()
+    del sess["mixed_answer"]
+    r = run_page(ROWS, sess=sess)
+    assert "without its speakers, unclear entry or mixed answer" in r["banner"] and r["posts"] == []
+
+
+def test_agent_supplied_row_and_option_values_are_escaped():
+    row = {**ROWS[0], "words": "<img src=x id=INJ>", "upload": "2026-01-01"}
+    r = run_page([row])
+    assert "<img src=x id=INJ>" not in r["detail"] and "&lt;img src=x id=INJ&gt; words" in r["detail"]
+    r = run_page([{**ROWS[0], "upload": "<!--1234"}])
+    assert "<!--" not in r["detail"] and "uploaded &lt;!---12-34" in r["detail"]
+    odd = {**CHECKLIST, "fields": [{**CHECKLIST["fields"][0],
+                                    "options": [{"value": "don't know", "label": "?", "key": "q"}]}]}
+    sess = session()
+    sess["checklist"] = odd
+    r = run_page(ROWS, sess=sess)
+    assert 'data-v="&quot;don\'t know&quot;"' in r["detail"]
+
+
+def test_answers_without_versions_leave_the_page_read_only():
+    r = run_page(ROWS, saved={"labels": {}, "attribution": {}, "versions": None})
+    assert r["posts"] == [] and "can't be saved" in r["banner"]
+
+
+def test_without_a_session_the_page_says_to_log_in():
+    r = run_page(ROWS, page_status=401)
+    assert "Open a new login link" in r["banner"] and r["list"] == ""
+
+
+def test_the_shells_hold_no_inline_script_or_style():
+    for name in ("page.html", "login.html", "landing.html"):
+        html = asset_bytes(name).decode()
+        assert "<script>" not in html and "style=" not in html and "<style" not in html, name
+        assert 'src="/static/' in html
+    assert "style=" not in build_app_js()
 
 
 # ------------------------------------------------------------------ SHADOW
@@ -141,8 +234,7 @@ def test_no_function_parameter_hides_a_module_level_binding_its_body_dereference
     # `store` holding the save adapter, and `setField(store, id, f, v)` already took a
     # parameter of that name. Inside setField the parameter won, so every save died
     # with "store.put is not a function". `node --check` passes it.
-    src = V.asset("template.html")
-    js = src[src.index("const D = "):]
+    js = build_app_js()
     globals_ = set()
     for decl in re.findall(r"^(?:let|const|var)\s+(.*?);?$", js, re.M):
         # One `let` line declares several names. Split on commas at bracket depth 0,
@@ -232,6 +324,15 @@ def test_once_every_question_has_an_answer_the_draft_shows_and_a_change_is_marke
     assert pv["value"]["draft_shown"] == "model-x" and pv["value"]["answers_before_draft"] == FULL
 
 
+def test_a_checklist_without_draft_fields_still_shows_the_draft():
+    # draft_fields is optional in a dataset's checklist; the page lists none rather than failing.
+    sess = session()
+    sess["checklist"] = {k: v for k, v in CHECKLIST.items() if k != "draft_fields"}
+    rv = run_page(ROWS, {"labels": {"p/absent": {**FULL, "checked_by": "operator", "key": "p/absent"}},
+                         "attribution": {}}, sess=sess, start="p/absent")
+    assert rv["threw"] == "" and "<b>Model draft</b>" in rv["detail"], rv["threw"]
+
+
 def test_a_second_change_keeps_the_blind_answers_of_the_first():
     blind = {"present": True, "format": "debate"}
     r2 = run_page(ROWS, {"labels": {"p/absent": {**FULL, "draft_shown": "model-x", "answers_before_draft": blind}},
@@ -289,6 +390,15 @@ def test_the_drafts_evidence_is_escaped():
     ev = run_page([{**ROWS[2], "draft": {**ROWS[2]["draft"], "evidence": ["E1 <i>&"]}}],
                   {"labels": {"p/absent": FULL}, "attribution": {}}, start="p/absent")
     assert "<blockquote>E1 &lt;i&gt;&amp;</blockquote>" in ev["detail"]
+
+
+def test_a_field_without_a_draft_label_is_named_by_its_label():
+    sess = session()
+    sess["checklist"] = {**CHECKLIST, "fields": [{k: v for k, v in f.items() if k != "draft_label"}
+                                                 for f in CHECKLIST["fields"]]}
+    rd = run_page(ROWS, {"labels": {"p/absent": {"present": True, "format": "debate"}}, "attribution": {}},
+                  sess=sess, start="p/absent")
+    assert "differs from the model's on: Subject present, Format</div>" in rd["detail"] and rd["threw"] == ""
 
 
 def test_the_card_names_each_field_that_differs_and_only_those():
@@ -359,3 +469,49 @@ def test_a_captions_only_session_shows_no_quotes_and_never_claims_done():
 def test_with_one_project_there_is_no_filter_and_no_tag():
     one = run_page([], sess=session(("alpha",), ("speakers", "captions")), quote_rows=[{**QROW, "projects": ["alpha"]}])
     assert one["projects"] == "" and 'class="pchip"' not in one["list"]
+
+
+# ------------------------------------------------------------------ GENERIC
+
+ANN_BO = [{"id": "ann", "label": "Ann Able", "key": "1"}, {"id": "bo", "label": "Bo Brand", "key": "2"}]
+ITEM = {"key": "call/one", "slug": "call", "sid": "one", "title": "Weekly call", "person": ""}
+
+
+def test_a_plain_item_opens_its_transcript_and_is_done_only_when_marked():
+    sess = session(("demo",), ("speakers", "captions"), speakers=ANN_BO, media=None, mixed="mixed")
+    r = run_page([ITEM], sess=sess, key=None, index={"call/one": {"text_sha256": "x", "token_count": 3}})
+    assert r["threw"] == ""
+    assert '<details class="range-extra" open>' in r["detail"] and "Mark who speaks in this transcript" in r["detail"]
+    assert 'id="done"' in r["detail"] and "Mark this item done" in r["detail"]
+    assert "Items</b>" in r["list"] and "0 of 1 done" in r["list"]
+    assert 'class="yt"' not in r["detail"] and "youtube" not in r["detail"].lower()
+    assert "Note on this item" in r["detail"]
+    assert "<b>1</b> Ann Able · <b>2</b> Bo Brand · <b>u</b> Unsure" in r["keyhelp"] and "open video" not in r["keyhelp"]
+    done = run_page([ITEM], sess=sess, key=None, saved={"labels": {}, "attribution": {},
+                                                        "review": {"notes": {}, "done": {"call/one": {}},
+                                                                   "reveals": {}, "finished": None}})
+    assert done["count"].startswith("1 of 1 items done") and "Done ✓" in done["detail"]
+    assert "Nothing here" in done["list"]  # the To do filter hides a done item
+
+
+def test_media_links_follow_the_datasets_template_only():
+    row = {**ROWS[0], "video_id": "abc"}
+    with_media = run_page([row], key=None)
+    assert 'href="https://www.youtube.com/watch?v=abc&amp;t=120s"' in with_media["detail"]
+    without = run_page([row], sess=session(media=None), key=None)
+    assert 'class="yt"' not in without["detail"] and "youtube" not in without["detail"].lower()
+
+
+def test_a_passage_shows_its_title_why_question_and_note():
+    q = {**QROW, "quotes": [{**QROW["quotes"][0], "title": "Budget", "why": "Who agreed?", "question": "Who said it?"}]}
+    r = run_page([], sess=session(("alpha",), ("speakers", "captions")), quote_rows=[q],
+                 saved={"labels": {}, "attribution": {}, "review": {"notes": {"p:q:3": {"text": "check me"}},
+                                                                    "done": {}, "reveals": {}, "finished": None}})
+    assert r["threw"] == ""
+    assert '<b class="qtitle">Budget</b>' in r["detail"] and "Who agreed?" in r["detail"]
+    assert "<b>Who said it?</b>" in r["detail"] and 'data-note="p:q:3"' in r["detail"] and "check me" in r["detail"]
+
+
+# Marking selected words with a speaker key, header clicks, reveal and Finish need a
+# real DOM selection and the span editor's markup, which this stub DOM does not build;
+# the browser check (Playwright) covers them.

@@ -48,7 +48,7 @@ async function persistCorrections(recording,edits,index){
  if(correctionPending[recording.key])return;
  const data=transcriptCache[recording.key],prior=correctionAnswers[recording.key];
  const value={key:recording.key,text_sha256:data.text_sha256,token_count:data.token_count,
-  edits,revision:prior?.revision||0,checked_by:"operator"};
+  edits,revision:prior?.revision||0};  // the server sets checked_by
  correctionPending[recording.key]=true;delete correctionErrors[recording.key];drawAllSpans(recording);
  try{
   const result=await saver.put("corrections",recording.key,value);

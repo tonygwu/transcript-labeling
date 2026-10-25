@@ -42,6 +42,9 @@ tl = "transcript_labeling.cli:main"
 # Test-only; still zero runtime deps. uv installs this group by default, so
 # `uv run pytest` uses the project's own pytest, never one found on PATH.
 dev = ["pytest>=8.0"]
+# The browser check only (`uv run --group browser pytest -m browser`). Pinned so the
+# Chromium build it drives is known: 1.64.0 uses build 1248.
+browser = ["playwright==1.64.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Labeling</title>
+<link rel="stylesheet" href="/static/page.css">
+<!-- An empty shell: no dataset, item or text is in this file. app.js fetches them with the session. -->
+<div class="app">
+ <header>
+  <div>
+   <h1 id="title">Labeling</h1>
+   <div class="sub" id="subtitle"></div>
+  </div>
+  <div class="meter"><span id="count"></span><span class="bar"><i id="bar"></i></span><button type="button" class="opt" id="finish" hidden>Finish</button></div>
+ </header>
+ <div id="banner" class="banner" hidden></div>
+ <div class="toolbar">
+  <div class="seg" role="group" aria-label="Show">
+   <button type="button" id="f-todo" aria-pressed="true">To do</button>
+   <button type="button" id="f-all" aria-pressed="false">All</button>
+   <button type="button" id="f-done" aria-pressed="false">Done</button>
+  </div>
+  <div class="seg" role="group" aria-label="Project" id="projects" hidden></div>
+  <span class="keys" id="legend"></span>
+  <span class="keys" id="keyhelp"></span>
+ </div>
+ <div class="main">
+  <nav class="list" id="list" aria-label="Recordings"></nav>
+  <section class="detail" id="detail" aria-live="polite"></section>
+ </div>
+</div>
+<script type="module" src="/static/app.js"></script>
+</html>

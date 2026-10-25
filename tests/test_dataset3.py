@@ -374,3 +374,19 @@ def test_a_missing_setting_does_not_hide_a_broken_items_map(tmp_path):
     manifest = {**{k: v for k, v in ds.manifest.items() if k != "title"}, "items": {"a/b": 5}}
     assert manifest_errors(manifest) == ["settings ['title'] are missing; `tl` writes every setting",
                                          "items must map each key to {text_sha256, token_count}"]
+
+
+def _checklist(key):
+    return {"fields": [{"name": "present", "label": "P", "type": "bool", "required": True,
+                        "options": [{"value": True, "label": "Yes", "key": key},
+                                    {"value": False, "label": "No", "key": "n"}]}],
+            "goal": {"count": 1, "help": "h"}, "accept_when_true": ["present"]}
+
+
+@pytest.mark.parametrize("key", ["J", "k", "1", "u"])
+def test_a_checklist_key_the_page_already_binds_is_refused(key):
+    # J/K move between items, 1 and 2 mark speakers, u marks unclear: a checklist option
+    # on any of them would make one key press do two things.
+    with pytest.raises(SystemExit, match="already uses"):
+        normalize_config({"speakers": SPEAKERS, "modes": ["checklist", "speakers"], "checklist": _checklist(key)})
+    assert normalize_config({"speakers": SPEAKERS, "modes": ["checklist", "speakers"], "checklist": _checklist("y")})

@@ -9,8 +9,7 @@ previous dataset readable, with `catalog.json` written last.
 Known gap: items are renamed into place one at a time and the manifest is written
 after them, so a crash in the middle of an upsert can leave an item file whose
 hash differs from the manifest. The page refuses such an item (it checks the hash
-against the transcript index). `verify` here checks version-2 sessions only; the
-version-3 verify, a later change, must report the mismatch too.
+against the transcript index) and `verify` reports it; nothing is silently wrong.
 
 A focus passage is a part of an item the owner should look at first: today's
 quote card, or one of a review's passages. An agent gives it by token offsets, or
@@ -36,6 +35,8 @@ CONTEXT_WORDS = 35
 ROW_FIELDS = ("title", "person", "role", "channel", "upload", "video_id", "duration", "description", "hints",
               "projects", "group", "words")
 PASSAGE_TEXT_FIELDS = ("title", "why", "question", "project")
+#: A passage id is an identifier, never text: it is written to the event log.
+PASSAGE_ID = re.compile(r"[A-Za-z0-9_.:/-]{1,120}")
 
 
 def make_item(key: str, text: str, *, suggestions=(), segments=None, meta=None, source=None) -> dict:
@@ -100,18 +101,40 @@ def focus_passage(item: dict, spec: dict, index: int) -> dict:
     words = item["tokens"]
     t = play_time(toks, start) if toks is not None else None
     group, name = item["key"].split("/")
-    return {"qid": spec.get("id") or f"{group}:{name}:{start}", "t": t, "start": lo, "end": hi,
+    qid = spec.get("id") or f"{group}:{name}:{start}"
+    if not isinstance(qid, str) or not PASSAGE_ID.fullmatch(qid):
+        raise SystemExit(f"REFUSING: a passage id must match {PASSAGE_ID.pattern} (it is logged), got {qid!r}")
+    bad = [f for f in PASSAGE_TEXT_FIELDS if spec.get(f) is not None and not isinstance(spec[f], str)]
+    if bad:
+        raise SystemExit(f"REFUSING: passage {index} of {item['key']}: {bad} must be strings")
+    return {"qid": qid, "t": t, "start": lo, "end": hi,
             "quote_start": start, "quote_end": end, "before": " ".join(words[lo:start]),
             "text": " ".join(words[start:end]), "after": " ".join(words[end:hi]),
             **{f: spec[f] for f in PASSAGE_TEXT_FIELDS if spec.get(f)}}
 
 
+#: The type each catalog row field must have. The page shows these values, so a wrong
+#: type is refused here rather than rendered as whatever it happens to be.
+ROW_TYPES = {"title": str, "person": str, "role": str, "channel": str, "upload": str, "video_id": str,
+             "description": str, "group": str, "duration": (int, float), "words": (int, float),
+             "hints": list, "projects": list}
+
+
 def catalog_row(key: str, spec: dict) -> dict:
     """The catalog row of an item: what the page lists and shows about it."""
     group, name = key.split("/")
+    if not isinstance(spec, dict):
+        raise SystemExit(f"REFUSING: the row of {key} must be an object")
     unknown = sorted(set(spec) - set(ROW_FIELDS))
     if unknown:
         raise SystemExit(f"REFUSING: unknown row fields {unknown}; known: {list(ROW_FIELDS)}")
+    for field, value in spec.items():
+        kind = ROW_TYPES[field]
+        bad = (not isinstance(value, kind) or isinstance(value, bool)
+               or (kind is list and not all(isinstance(v, str) for v in value)))
+        if bad:
+            want = "a list of strings" if kind is list else "a number" if kind != str else "a string"
+            raise SystemExit(f"REFUSING: row field {field!r} of {key} must be {want}, got {type(value).__name__}")
     return {"key": key, "slug": group, "sid": name, "title": spec.get("title") or name,
             "person": spec.get("person") or "", **{f: spec[f] for f in ROW_FIELDS
                                                     if f in spec and f not in ("title", "person")}}
@@ -162,9 +185,12 @@ def add_items(ds: Dataset, state_dir: Path, entries: list[dict], *, upsert: bool
                 elif key in answered and (ds.item(key).get("meta") or []) != (item.get("meta") or []):
                     # Header ranges decide which words are speech, so they move results too.
                     problems.append(f"{key}: its header ranges changed under saved answers")
-            unknown_row = sorted(set(e.get("row") or {}) - set(ROW_FIELDS))
-            if unknown_row:
-                problems.append(f"{key}: unknown row fields {unknown_row}; known: {list(ROW_FIELDS)}")
+            try:
+                # An upsert without a row keeps the row the item has.
+                spec = e.get("row")
+                e["_row"] = rows[key] if not spec and key in rows else catalog_row(key, {} if spec is None else spec)
+            except SystemExit as exc:
+                problems.append(f"{key}: {str(exc).removeprefix('REFUSING: ')}")
             quotes = [focus_passage(item, spec, i) for i, spec in enumerate(e.get("focus") or [])]
             dropped = sorted({c["qid"] for c in qrows.get(key, {}).get("quotes", [])} & answered_qids
                              - {q["qid"] for q in quotes})
@@ -211,8 +237,7 @@ def add_items(ds: Dataset, state_dir: Path, entries: list[dict], *, upsert: bool
                                      "the dataset must be on one filesystem") from exc
                 manifest["items"][key] = {"text_sha256": e["item"]["text_sha256"],
                                           "token_count": e["item"]["token_count"]}
-                # An upsert without a row keeps the row the item has.
-                rows[key] = catalog_row(key, e["row"]) if e.get("row") or key not in rows else rows[key]
+                rows[key] = e["_row"]
                 if e["_quotes"]:
                     qrows[key] = {"key": key, "quotes": e["_quotes"]}
                 elif key in qrows and upsert:

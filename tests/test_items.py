@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
@@ -179,8 +180,9 @@ def test_a_killed_writers_staging_folder_is_removed(ds, tmp_path):
     assert not (state / "staging-dead").exists()
 
 
+# A focus title of inf is refused earlier, as a title that is not a string.
 @pytest.mark.parametrize("where, bad", [("duration", float("nan")), ("source", float("nan")),
-                                        ("focus", float("inf")), ("row", "Caf\ud83d"), ("focus", "Caf\ud83d"),
+                                        ("source", float("inf")), ("row", "Caf\ud83d"), ("focus", "Caf\ud83d"),
                                         ("source", object())])
 def test_a_value_json_cannot_hold_refuses_the_batch_before_anything_is_written(tmp_path, where, bad):
     # NaN, half of an emoji (a lone surrogate), and a value of no JSON type.
@@ -193,3 +195,38 @@ def test_a_value_json_cannot_hold_refuses_the_batch_before_anything_is_written(t
         add_items(ds, tmp_path / "state", [{"item": item, "row": row, "focus": focus}])
     ds = Dataset.open(tmp_path / "d")
     assert ds.manifest["items"] == {} and ds.catalog()["rows"] == [] and not ds.item_path("call/one").exists()
+
+
+@pytest.mark.parametrize("row, expect", [
+    ({"words": "<img src=x>"}, "'words' of g/a must be a number, got str"),
+    ({"duration": True}, "'duration' of g/a must be a number, got bool"),
+    ({"title": 5}, "'title' of g/a must be a string"),
+    ({"hints": ["ok", 3]}, "'hints' of g/a must be a list of strings"),
+    ({"projects": "alpha"}, "'projects' of g/a must be a list of strings"),
+])
+def test_row_fields_must_have_their_types(row, expect):
+    with pytest.raises(SystemExit, match=re.escape(expect)):
+        catalog_row("g/a", row)
+    assert catalog_row("g/a", {"words": 1200, "duration": 61.5, "hints": ["x"], "title": "T"})["words"] == 1200
+
+
+@pytest.mark.parametrize("pid", ["free text with spaces", "x" * 121, ""])
+def test_a_passage_id_is_an_identifier(pid):
+    item = make_item("g/a", "one two three four")
+    with pytest.raises(SystemExit, match="passage id"):
+        focus_passage(item, {"start": 0, "end": 2, "id": pid or 5}, 0)
+
+
+@pytest.mark.parametrize("row", [{"words": "1,200"}, {"duration": "61"}, ["not", "an", "object"]])
+def test_a_bad_row_is_refused_before_any_file_moves(ds, tmp_path, row):
+    state = tmp_path / "state"
+    add_items(ds, state, [entry()])
+    before = {p: p.read_bytes() for p in [ds.root / "manifest.json", ds.root / "catalog.json",
+                                          ds.items_dir / "call" / "one.json"]}
+    upsert = {**entry(text=TEXT + " More."), "row": row}
+    with pytest.raises(SystemExit, match="nothing was written"):
+        add_items(ds, state, [upsert], upsert=True)
+    with pytest.raises(SystemExit, match="nothing was written"):
+        add_items(ds, state, [entry("call/two", "a b c"), {**entry("call/three", "d e"), "row": row}])
+    assert {p: p.read_bytes() for p in before} == before
+    assert sorted(p.name for p in (ds.items_dir / "call").iterdir()) == ["one.json"]
