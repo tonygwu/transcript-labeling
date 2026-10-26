@@ -8,7 +8,7 @@ owner a login link. The owner labels in the browser: who said which words, what
 was actually said, and any checklist questions. The agent waits for the owner to
 finish and reads the labels back as JSON.
 
-Status: not deployed yet. [docs/SPEC.md](docs/SPEC.md) says what the service
+Status: version 0.1.0 has run on the owner's Mac since 2026-10-25. [docs/SPEC.md](docs/SPEC.md) says what the service
 stores and promises, [docs/API.md](docs/API.md) lists the calls, `tl` and the
 MCP tools, [docs/DEPLOY.md](docs/DEPLOY.md) is the install procedure, and
 [docs/HISTORY.md](docs/HISTORY.md) records what was taken from verbatim-index.

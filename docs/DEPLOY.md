@@ -1,8 +1,11 @@
 # Deploy
 
-Status: written, not yet run. None of these steps has been carried out on this
-Mac. The first deployment needs the owner's go-ahead, because it creates the
-public GitHub repository and installs a service that runs all the time.
+Status: first install done on 2026-10-25, at `v0.1.0`, with the owner's
+go-ahead. Every check in step 7 passed, and one `wait` call through Codex's MCP
+client returned "still waiting" after 50 seconds, not a timeout. verbatim-index
+denied the port and home in its judge sandboxes first (its backlog item VI-59);
+its leaders Astra grader and resolver run unsandboxed until its VI-58, so no
+verbatim dataset is registered here before then.
 
 ## Where things live
 
