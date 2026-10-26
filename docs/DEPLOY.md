@@ -59,8 +59,8 @@ args = ["mcp"]
 ```
 
 If the service uses a `TL_HOME` other than the default, add
-`env = { TL_HOME = "<that path>" }` to the table. `~/.codex-b` shares this file
-through a symlink. Codex judges run with
+`env = { TL_HOME = "<that path>" }` to the table. A second Codex home whose
+`config.toml` is a symlink to this file gets the same table. Codex judges run with
 `--ignore-user-config`, so they never see the server. Measure Codex's per-tool
 timeout once with a real `wait` call: it must be longer than the 50 seconds one
 `wait` call can take, plus a status call.
@@ -71,13 +71,17 @@ timeout once with a real `wait` call: it must be longer than the 50 seconds one
 cd ~/Code/tools/labeling/transcript-labeling/repo-prod
 git fetch --tags
 git checkout v0.1.1          # the new release tag
-uv tool install --force .
+uv tool install --force --reinstall .
+tl --version                 # must print the new version
 launchctl kickstart -k gui/$(id -u)/local.transcript-labeling.server
 tl doctor
 ```
 
-`tl doctor` fails while the running service's version differs from the
-installed one.
+`--reinstall` is needed: without it, `uv tool install --force` can reuse its
+cached build of the same path and install the old version again, and then
+`tl doctor` passes because the server and the install agree on the old
+version. `tl doctor` fails while the running service's version differs from
+the installed one.
 
 ## Remove
 
