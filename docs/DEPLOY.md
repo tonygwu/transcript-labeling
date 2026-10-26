@@ -3,9 +3,10 @@
 Status: first install done on 2026-10-25, at `v0.1.0`, with the owner's
 go-ahead. Every check in step 7 passed, and one `wait` call through Codex's MCP
 client returned "still waiting" after 50 seconds, not a timeout. verbatim-index
-denied the port and home in its judge sandboxes first (its backlog item VI-59);
-its leaders Astra grader and resolver run unsandboxed until its VI-58, so no
-verbatim dataset is registered here before then.
+denied the port and home in its judge sandboxes first (its backlog item VI-59).
+Five of its Astra callers run outside that sandbox (its open item VI-58): they
+can read this service's files but cannot reach its port (SPEC.md, Known
+limits), so no verbatim dataset is registered here until VI-58 is resolved.
 
 ## Where things live
 

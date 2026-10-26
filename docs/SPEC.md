@@ -168,3 +168,14 @@ allows only this origin's scripts and connections.
 - An agent's `git commit --amend` right after a label commit folds the labels
   into its own commit; the content survives, the message no longer says so.
 - The event log is not rotated; `tl status` reports its line count.
+- Five of verbatim-index's Astra callers (its leaderboard grader, resolver,
+  extractor, dater and market matcher) run outside its judge sandbox, under
+  Codex's read-only policy. That policy refuses their shell commands every
+  network connection, so they cannot reach the port, but it lets them read
+  every file the owner can, including `$TL_HOME`'s token, local-only
+  transcripts and labels. In verbatim's stored records (measured 2026-10-26
+  UTC), 9% of their calls that record a count ran a shell command: none of
+  the leaderboard grader's 308, about one in ten of the resolver's and one in
+  five of the dater's. The commands that were kept read only skill files and
+  their own working folders, and every attempt to fetch something failed. Until verbatim-index's backlog item VI-58 is resolved, no verbatim
+  dataset is registered here, and any local-only project is readable by them.
