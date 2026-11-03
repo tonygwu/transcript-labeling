@@ -39,6 +39,11 @@ JavaScript or CSS, look at the screenshots it writes, and say in the commit
 whether it ran. Without the `browser` group it fails with "Playwright is
 missing"; it never skips.
 
+The README's picture of the page, `docs/images/labeling-page.png`, is drawn by
+`uv run --group browser python ops/readme_screenshot.py` from an invented call, in
+a throwaway service that never touches the live one. After a change that alters
+how the page looks, run it and commit the new picture with the change.
+
 ## Runtime rules
 
 - **Standard library only at runtime.** `dependencies = []` in `pyproject.toml`
