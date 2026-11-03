@@ -2,9 +2,9 @@
 
 A labeling service that runs on your Mac, for transcripts that a coding agent
 needs a person to check. An agent such as Claude Code or Codex gives the service
-a transcript, and the service gives you a link. You open the link, mark who said
-which words, correct any caption errors and press Finish. The agent then reads
-your labels back as JSON.
+a transcript and sends you the link that the service returns. You open it, mark
+who said which words, correct any caption errors and press Finish. The agent
+then reads your labels back as JSON.
 
 ![The labeling page, open on an invented planning call between Jane Roe and Sam Poe](docs/images/labeling-page.png)
 
@@ -16,8 +16,8 @@ Sam. The late joiner's caption at 0:20 is not marked yet.*
 
 Transcripts often name speakers badly. A transcriber writes "Speaker 1" or
 "Unknown", or puts two people into one caption. An agent cannot tell who spoke,
-and a guess is not a label. Before this service, each of these questions needed
-a one-off web page and a downloaded answers file. Now it takes one command for
+and a guess is not a label. Before this service, each such check needed a
+one-off web page and a downloaded answers file. Now it takes one command for
 the agent and one link for you.
 
 ## What you can label
@@ -61,8 +61,12 @@ tl export demo/planning-call segments
 `demo/planning-call` names a project and a dataset. A dataset is one labeling
 task, and each transcript in it is an item. Each speaker is written as
 `id=Label:key`. The id appears in the export, the label appears on the page, and
-the key marks the selected words. Run `tl` inside your project's git checkout,
-because each write records the repository that made it. Outside a checkout, add
+the key marks the selected words.
+
+Each write names the repository it comes from, and a project accepts writes
+only from the repositories it lists. At first that list holds only the
+repository that created the project. `tl` takes the name from the GitHub
+`origin` of the checkout it runs in. If you run it anywhere else, add
 `--repo owner/name`.
 
 The `segments` export has one row per caption. This is the split caption from
@@ -77,8 +81,9 @@ the picture above:
 ```
 
 `label` is what the transcriber wrote, and `speaker` is what you marked. Times
-are in seconds. `start` and `end` are word positions in the transcript,
-counted from 0, and `end` is one past the last word. A piece with `"speaker": null` holds words that you left unmarked,
+are in seconds. `start` and `end` are positions among the file's
+whitespace-separated words, counted from 0, and `end` is one past the last
+word. The count includes the time lines and the labels. A piece with `"speaker": null` holds words that you left unmarked,
 so they are unknown. Other exports give your marked ranges, the result for
 each passage an agent asked about, your caption corrections, your checklist
 answers and your notes. [docs/API.md](docs/API.md)
@@ -117,7 +122,7 @@ returns the file's path and counts, never the transcript text.
 
 ## Privacy and safety
 
-- The server listens on 127.0.0.1 only, so one person per Mac can label.
+- The server listens on 127.0.0.1 only, so other machines cannot reach it.
 - Agents prove who they are with a token file that only your macOS account can
   read. Your browser logs in with the one-time link. The page sends its session
   in a request header, never in a cookie.
@@ -147,10 +152,21 @@ tl init     # makes ~/.local/share/transcript-labeling, its config and its token
 tl serve    # runs the server in this terminal, at http://127.0.0.1:8790
 ```
 
-Then run `tl doctor` in another terminal to check the setup. To start the server
-at login and restart it after a crash, install it as a launchd agent.
-[docs/DEPLOY.md](docs/DEPLOY.md) has those steps, and the steps to upgrade and
-remove it.
+Then run `tl doctor` in another terminal to check the setup.
+
+To start the server at login and restart it after a crash, install it as a
+launchd agent. Before you do, stop `tl serve`, because both use port 8790. The
+installer is in this repository:
+
+```sh
+git clone https://github.com/tonygwu/transcript-labeling
+cd transcript-labeling
+ops/install-launchd.sh --print     # shows the plist and changes nothing
+ops/install-launchd.sh --install
+```
+
+[docs/DEPLOY.md](docs/DEPLOY.md) is the author's own runbook for the always-on
+install, upgrades and removal.
 
 ## Status
 
@@ -163,7 +179,7 @@ format come from the annotation tool of
 |---|---|
 | [docs/SPEC.md](docs/SPEC.md) | What the service stores, what it promises, and its known limits |
 | [docs/API.md](docs/API.md) | Every HTTP call, `tl` command and MCP tool |
-| [docs/DEPLOY.md](docs/DEPLOY.md) | The always-on install, upgrades and removal |
+| [docs/DEPLOY.md](docs/DEPLOY.md) | The author's runbook for the always-on install, upgrades and removal |
 | [docs/HISTORY.md](docs/HISTORY.md) | What was taken from verbatim-index, and from which commit |
 
 ## Development

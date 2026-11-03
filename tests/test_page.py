@@ -502,7 +502,7 @@ def test_a_plain_dataset_speaks_of_items_not_quotes_recordings_or_modes():
     assert r["subtitle"] == "Mark who said which words and correct the captions. Each answer saves the moment you make it."
     for part in ("keyhelp", "legend", "detail"):
         assert not re.search(r"quote|recording", r[part], re.I), (part, r[part])
-    assert "<b>j</b>/<b>k</b> next item" in r["keyhelp"]
+    assert "<b>j</b>/<b>k</b> next or previous item" in r["keyhelp"]
     # Nothing on a plain dataset can turn an item red, so the key does not offer that dot.
     assert "dot rej" not in r["legend"] and "dot done" in r["legend"] and "dot part" in r["legend"]
     captions = run_page([ITEM], sess=session(("demo",), ("captions",), speakers=ANN_BO, media=None), key=None)

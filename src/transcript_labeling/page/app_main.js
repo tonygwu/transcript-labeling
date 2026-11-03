@@ -119,7 +119,7 @@ function renderList(){
    ? `<div class="grp"><b>${esc(person)}</b><span class="${p.qa===p.q?"ok":""}" title="quotes with a saved answer">${p.qa} of ${p.q} quotes answered</span></div>`
    : !CHECK
    ? `<div class="grp"><b>${esc(person||"Items")}</b><span class="${p.d===p.n?"ok":""}" title="items marked done or fully answered">${p.d} of ${p.n} done</span></div>`
-   : `<div class="grp"><b>${esc(person)}</b><span class="${p.ok>=CHECK.goal.count?"ok":""}" title="${esc(CHECK.goal.help)}">${p.ok} verified of ${p.n}${p.q?` · ${p.q} quotes`:""}</span></div>`;
+   : `<div class="grp"><b>${esc(person)}</b><span class="${p.ok>=CHECK.goal.count?"ok":""}" title="${esc(CHECK.goal.help)}">${p.ok} done of ${p.n}${p.q?` · ${p.q} quotes`:""}</span></div>`;
   for(const r of rs){
    const left=outstanding(r);
    h+=`<div class="item" tabindex="0" data-k="${esc(r.key)}" aria-current="${r.key===cur}"><span class="dot ${recState(r)}"></span><span class="t">${esc(r.title)}${r.quotes.length?` <span class="turn">· ${r.quotes.length} quote${r.quotes.length>1?"s":""}</span>`:""}${chips(projectsOf(r))}</span></div>`;}
@@ -281,7 +281,7 @@ el("legend").innerHTML = CAPTIONS_ONLY ? `<span class="dot part inline"></span> 
   + (REJECTS.length ? ` · <span class="dot rej inline"></span> ${REJECTS.join(" or ")}` : "");
 el("keyhelp").innerHTML = (QUOTE_ONLY || !CHECK
  ? "Keys: " : "Keys: " + FIELDS.map(f=>`${fieldKeys(f)} ${esc(f.draft_label||f.label)}`).join(" · ") + (HAS_QUOTES ? " · quotes: " : " · "))
- + (HAS_QUOTES ? "<b>[</b>/<b>]</b> move between quotes · " : "") + "<b>j</b>/<b>k</b> next item"
+ + (HAS_QUOTES ? "<b>[</b>/<b>]</b> move between quotes · " : "") + "<b>j</b>/<b>k</b> next or previous item"
  + (S.media ? " · <b>v</b> open video" : "")
  + (HAS("speakers") && SPEAKERS.length ? " · selected words: " + [...SPEAKERS, UNCLEAR].map(s=>`<b>${esc(s.key)}</b> ${esc(fillLabel(s.label, {person:"subject"}))}`).join(" · ") : "");
 if(S.projects.length>1){const box=el("projects"); box.hidden=false;

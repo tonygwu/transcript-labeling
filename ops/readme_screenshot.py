@@ -139,14 +139,16 @@ def main() -> int:
                 page.click('.item[data-k="call/call-1"]')
                 page.wait_for_function(f"document.querySelectorAll('.span-transcript .word.reviewed').length > 0")
                 page.mouse.move(0, 0)
-                bottom = page.locator(".span-transcript").bounding_box()
-                if bottom["y"] + bottom["height"] > HEIGHT:
+                box = page.locator(".span-transcript").bounding_box()
+                below = page.locator(".span-transcript + .opts").bounding_box()
+                if box["y"] + box["height"] > HEIGHT:
                     raise SystemExit(f"the transcript ends below the {HEIGHT}px window; raise HEIGHT")
                 if errors:
                     raise SystemExit(f"the page raised: {errors}")
                 OUT.parent.mkdir(parents=True, exist_ok=True)
+                # End the picture in the gap between the transcript and the buttons under it.
                 page.screenshot(path=OUT, clip={"x": 0, "y": 0, "width": WIDTH,
-                                                "height": bottom["y"] + bottom["height"] + 16})
+                                                "height": (box["y"] + box["height"] + below["y"]) / 2})
                 browser.close()
         finally:
             httpd.shutdown()
