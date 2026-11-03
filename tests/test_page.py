@@ -514,6 +514,9 @@ def test_a_dataset_with_quotes_or_a_checklist_keeps_their_keys_and_the_red_dot(f
     assert "<b>[</b>/<b>]</b> move between quotes" in quotes["keyhelp"]
     assert "misattributed quote" in quotes["legend"]
     assert "dot rej" in first["legend"] and "excluded" in first["legend"]
+    # A checklist group counts its green items as "done", the word the colour key uses.
+    assert re.search(r"\d+ done of \d+", first["list"]) and " verified of " not in first["list"]
+    assert 'aria-label="Items"' in asset_bytes("page.html").decode()
     assert first["subtitle"].startswith("Answer each item's questions, mark who said which words and correct the captions.")
 
 

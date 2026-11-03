@@ -64,10 +64,15 @@ task, and each transcript in it is an item. Each speaker is written as
 the key marks the selected words.
 
 Each write names the repository it comes from, and a project accepts writes
-only from the repositories it lists. At first that list holds only the
-repository that created the project. `tl` takes the name from the GitHub
-`origin` of the checkout it runs in. If you run it anywhere else, add
-`--repo owner/name`.
+only from the repositories it lists. The list is set when the project is made,
+and no command changes it later. `tl new --create-project` lists only the
+repository that ran it. `tl project create` also lists the private checkout's
+own repositories and each `--writer`. A write from any other repository is
+refused, unless the agent adds `--owner-override` because you asked it to.
+
+The list guards against mistakes, but it is not authentication, because a
+caller can name any repository. `tl` takes the name from the GitHub `origin` of
+the checkout it runs in. If you run it anywhere else, add `--repo owner/name`.
 
 The `segments` export has one row per caption. This is the split caption from
 the picture above:
@@ -165,8 +170,25 @@ ops/install-launchd.sh --print     # shows the plist and changes nothing
 ops/install-launchd.sh --install
 ```
 
-[docs/DEPLOY.md](docs/DEPLOY.md) is the author's own runbook for the always-on
-install, upgrades and removal.
+To upgrade, install again and restart the agent. `--reinstall` stops uv from
+reusing its earlier build:
+
+```sh
+uv tool install --force --reinstall git+https://github.com/tonygwu/transcript-labeling
+launchctl kickstart -k gui/$(id -u)/local.transcript-labeling.server
+tl doctor
+```
+
+To remove the agent, run these two commands. Your labels stay in
+`~/.local/share/transcript-labeling`.
+
+```sh
+launchctl bootout gui/$(id -u)/local.transcript-labeling.server
+rm ~/Library/LaunchAgents/local.transcript-labeling.server.plist
+```
+
+[docs/DEPLOY.md](docs/DEPLOY.md) is the author's own runbook for the same steps
+on the author's Mac.
 
 ## Status
 
