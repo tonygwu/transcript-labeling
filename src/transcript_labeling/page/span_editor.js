@@ -82,7 +82,7 @@ function saveRanges(recording,ranges){
   spanErrors[recording.key]="";
  }).catch(error=>{spanErrors[recording.key]=error.message||String(error);}).finally(()=>{
   spanPending[recording.key]--;updateSpanStatus(recording);renderList();
-  if(cur===recording.key) el("status").textContent=complete(recording)?"All answered":`${outstanding(recording)} answers left on this recording`;
+  if(cur===recording.key) el("status").textContent=complete(recording)?"All answered":`${outstanding(recording)} answers left on this item`;
  });
  for(const quote of recording.quotes) attrib[quote.qid]={...(attrib[quote.qid]||{}),answer:null,review_status:"saving"};
  renderList();drawAllSpans(recording);
@@ -204,14 +204,18 @@ function drawSpanEditor(recording,index){
   if(edit)i=end-1;
 
  }
- const SPK=HAS("speakers"),CAP=HAS("captions");
+ const SPK=HAS("speakers"),CAP=HAS("captions"),excerpts=recording.excerpts||[];
+ // The whole-item editor sits under a heading of its own (renderDetail), so it repeats none.
+ const top=(index<0?"":`<b>${SPK?"Mark who is speaking":"Correct the captions"}</b>`)
+  +(index<0&&!excerpts.length?"":`<button type="button" class="opt" data-expand>${spanFull[id]?"Back to passage":"Expand to full transcript"}</button>`);
+ const view=spanFull[id]?"full transcript":index<0&&!excerpts.length?"this transcript":"this passage";
  const marked=humanRanges(recording).filter(range=>range.start<hi&&range.end>lo&&speechIndices(data,Math.max(lo,range.start),Math.min(hi,range.end)).length);
- root.innerHTML=`<div class="span-top"><b>${SPK?"Mark who is speaking":"Correct the captions"}</b>${index<0&&!(recording.excerpts||[]).length?"":`<button type="button" class="opt" data-expand>${spanFull[id]?"Back to passage":"Expand to full transcript"}</button>`}</div>
+ root.innerHTML=`${top?`<div class="span-top">${top}</div>`:""}
   <p class="span-instructions">Select words, then ${SPK&&CAP?"choose who said them or use Correct text for caption errors":SPK?"choose who said them":"use Correct text for caption errors"}. Caption gaps and playback times are skipped automatically.</p>
   <div class="span-legend">${SPEAKERS.map(sp=>`<span class="${speakerClass(sp.id)} reviewed">${esc(speakerLabel(sp.id,recording))} · reviewed</span>`).join("")}<span class="unclear reviewed">${esc(UNCLEAR.label)}</span><span class="${speakerClass(SPEAKER_IDS[0])} draft">Dashed · model suggestion</span><span>Plain · not reviewed</span>${quote?'<span class="evidence">Underline · passage being checked</span>':""}</div>
   ${data.suggestions_hidden?`<p class="span-model"><button type="button" class="opt" data-reveal ${writable?"":"disabled"}>Show model suggestions (${data.suggestions_hidden})</button> Hidden until you ask, so what you mark first is your own reading. The ranges you have marked so far are kept as your blind answer.</p>`:""}
-  <p class="span-model">${known?"Model estimates cover "+known+" of these "+spoken.length+" words. Confirm or correct the dashed suggestions.":"No model suggestions for this passage. Label the words you can identify; use “Unsure” when you cannot identify the speaker."} ${states.slice(lo,hi).some(s=>s.speaker==="conflict")?"Models disagree on the dotted words; review those yourself.":""}</p>
-  ${index<0&&!spanFull[id]?`<label class="span-samples">Passage <select data-sample>${(recording.excerpts||[]).map((e,i)=>`<option value="${i}" ${i===(spanSample[recording.key]||0)?"selected":""}>${Math.round(e.at*100)}% into recording</option>`).join("")}</select></label>`:""}
+  <p class="span-model">${known?"Model estimates cover "+known+" of these "+spoken.length+" words. Confirm or correct the dashed suggestions.":`${data.suggestions_hidden?"":"No model suggestions for these words. "}Label the words you can identify; use “${esc(UNCLEAR.label)}” when you cannot identify the speaker.`} ${states.slice(lo,hi).some(s=>s.speaker==="conflict")?"Models disagree on the dotted words; review those yourself.":""}</p>
+  ${index<0&&!spanFull[id]&&excerpts.length?`<label class="span-samples">Passage <select data-sample>${excerpts.map((e,i)=>`<option value="${i}" ${i===(spanSample[recording.key]||0)?"selected":""}>${Math.round(e.at*100)}% into the transcript</option>`).join("")}</select></label>`:""}
   <div class="span-actions"><div class="span-selection" aria-live="polite"></div><div class="opts">
    ${SPK?`${SPEAKERS.map(sp=>`<button class="opt ${speakerClass(sp.id)}" type="button" data-paint="${esc(sp.id)}">${esc(speakerLabel(sp.id,recording))} <kbd>${esc(sp.key)}</kbd></button>`).join("")}
    <button class="opt" type="button" data-paint="${esc(UNCLEAR.id)}">${esc(UNCLEAR.label)} <kbd>${esc(UNCLEAR.key)}</kbd></button>
@@ -220,7 +224,7 @@ function drawSpanEditor(recording,index){
   </div>
   ${correctionPanel(recording,index,lo,hi)}
   <div class="span-transcript" tabindex="0" role="region" aria-label="Transcript passage for speaker annotation">${words}</div>
-  <div class="opts">${SPK?`<button type="button" class="opt" data-confirm ${!writable||!markable?"disabled":""}>Confirm suggested spans in ${spanFull[id]?"full transcript":"this passage"}</button>`:""}
+  <div class="opts">${SPK?`<button type="button" class="opt" data-confirm ${!writable||!markable?"disabled":""}>Confirm suggested spans in ${view}</button>`:""}
    <button type="button" class="opt" data-undo ${!writable||!spanUndo[recording.key]?.length?"disabled":""}>Undo marking</button>
    <button type="button" class="opt" data-retry ${!spanErrors[recording.key]?"hidden":""}>Retry save</button></div>
   <div class="span-status status" role="status"></div>

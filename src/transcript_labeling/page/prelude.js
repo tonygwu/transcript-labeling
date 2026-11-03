@@ -18,7 +18,11 @@ async function tlLoadPage(){
  const data = await res.json();
  document.title = data.session.title;
  document.getElementById("title").textContent = data.session.title;
+ // The subtitle says what to do, in a fixed order, not which modes are on.
+ const tasks = [["checklist", "answer each item's questions"], ["speakers", "mark who said which words"],
+  ["captions", "correct the captions"]].filter(([m]) => data.session.modes.includes(m)).map(([, t]) => t);
+ const todo = tasks.length > 1 ? tasks.slice(0, -1).join(", ") + " and " + tasks[tasks.length - 1] : tasks.join("");
  document.getElementById("subtitle").textContent =
-  "Modes: " + data.session.modes.join(", ") + ". Each answer saves the moment you make it.";
+  (todo ? todo[0].toUpperCase() + todo.slice(1) + ". " : "") + "Each answer saves the moment you make it.";
  return data;
 }

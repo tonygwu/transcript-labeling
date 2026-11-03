@@ -86,8 +86,9 @@ setTimeout(() => {
   const keys = Array.isArray(KEY) ? KEY : KEY ? [KEY] : [];
   keys.forEach((k, i) => setTimeout(() => keydown && keydown({key: k, target: {tagName: "BODY", closest: () => null},
                                                                 preventDefault() {}}), 20 * i));
+  const legend = nodes.legend && nodes.legend.innerHTML, subtitle = nodes.subtitle && nodes.subtitle.textContent;
   setTimeout(() => console.log(JSON.stringify({list, detail, posts, threw, projects, keyhelp, count, picked, status,
-                                               allPressed, banner, title, fetched,
+                                               allPressed, banner, title, fetched, legend, subtitle,
                                                bannerAfter: nodes.banner && !nodes.banner.hidden ? nodes.banner.textContent : ""})),
              (NOTES !== null ? 800 : 30) + 20 * keys.length);
 }, 30);
@@ -152,7 +153,7 @@ def run_page(rows, saved=None, sess=None, quote_rows=None, pick=None, filt=None,
     out = json.loads(n.stdout.strip().splitlines()[-1])
     return {k: out.get(k) or ("" if k not in ("posts", "fetched") else []) for k in
             ("list", "detail", "posts", "threw", "projects", "keyhelp", "count", "picked", "status", "allPressed",
-             "banner", "title", "fetched", "bannerAfter")}
+             "banner", "title", "fetched", "bannerAfter", "legend", "subtitle")}
 
 
 def flat(s: str) -> str:
@@ -457,8 +458,8 @@ def test_the_project_filter_keeps_that_projects_recordings():
 def test_a_captions_only_session_shows_no_quotes_and_never_claims_done():
     cap = run_page([], sess=session(("alpha",), ("captions",)), quote_rows=[{**QROW, "projects": ["alpha"]}])
     assert cap["threw"] == "" and "QUOTE-A" not in cap["detail"]
-    assert "Correct the captions of this recording" in cap["detail"]
-    assert cap["count"] == "0 of 1 recordings have caption corrections" and 'data-k="p/q"' in cap["list"]
+    assert "Correct the captions of this transcript" in cap["detail"]
+    assert cap["count"] == "0 of 1 items have caption corrections" and 'data-k="p/q"' in cap["list"]
     assert "nothing else to answer" in cap["status"] and "0 of 1 corrected" in cap["list"]
     assert "quotes answered" not in cap["list"] and cap["allPressed"] == "true"
     capd = run_page([], sess=session(("alpha",), ("captions",)), quote_rows=[{**QROW, "projects": ["alpha"]}],
@@ -492,6 +493,28 @@ def test_a_plain_item_opens_its_transcript_and_is_done_only_when_marked():
                                                                    "reveals": {}, "finished": None}})
     assert done["count"].startswith("1 of 1 items done") and "Done ✓" in done["detail"]
     assert "Nothing here" in done["list"]  # the To do filter hides a done item
+
+
+def test_a_plain_dataset_speaks_of_items_not_quotes_recordings_or_modes():
+    sess = session(("demo",), ("speakers", "captions"), speakers=ANN_BO, media=None, mixed="mixed")
+    r = run_page([ITEM], sess=sess, key=None)
+    assert r["threw"] == ""
+    assert r["subtitle"] == "Mark who said which words and correct the captions. Each answer saves the moment you make it."
+    for part in ("keyhelp", "legend", "detail"):
+        assert not re.search(r"quote|recording", r[part], re.I), (part, r[part])
+    assert "<b>j</b>/<b>k</b> next item" in r["keyhelp"]
+    # Nothing on a plain dataset can turn an item red, so the key does not offer that dot.
+    assert "dot rej" not in r["legend"] and "dot done" in r["legend"] and "dot part" in r["legend"]
+    captions = run_page([ITEM], sess=session(("demo",), ("captions",), speakers=ANN_BO, media=None), key=None)
+    assert captions["subtitle"] == "Correct the captions. Each answer saves the moment you make it."
+
+
+def test_a_dataset_with_quotes_or_a_checklist_keeps_their_keys_and_the_red_dot(first):
+    quotes = run_page([], sess=session(("alpha",), ("speakers", "captions")), quote_rows=[QROW], key=None)
+    assert "<b>[</b>/<b>]</b> move between quotes" in quotes["keyhelp"]
+    assert "misattributed quote" in quotes["legend"]
+    assert "dot rej" in first["legend"] and "excluded" in first["legend"]
+    assert first["subtitle"].startswith("Answer each item's questions, mark who said which words and correct the captions.")
 
 
 def test_media_links_follow_the_datasets_template_only():

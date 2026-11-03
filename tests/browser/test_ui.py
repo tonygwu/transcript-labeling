@@ -206,6 +206,12 @@ def test_the_zoom_flow(svc, browser, shots, scheme):
     open_item(page, key)
     assert page.locator("[data-reveal]").count() == 1, "suggestions must start hidden (reveal: after_answer)"
     assert page.locator(SUGGESTED).count() == 0
+    # An item without passages has no Passage menu and no second heading, and hidden
+    # suggestions are not reported as missing.
+    editor = '[data-span-editor="-1"]'
+    assert page.locator(f"{editor} [data-sample]").count() == 0
+    assert page.locator(f"{editor} .span-top b").count() == 0
+    assert "No model suggestions" not in page.inner_text(editor)
     page.screenshot(path=shots / f"02-item-{scheme}.png", full_page=True)
 
     # MARK and SPLIT: the first five words of one caption as Ann, the rest as Bo.

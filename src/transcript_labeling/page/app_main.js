@@ -55,7 +55,7 @@ for(const r of (D.quote_rows||[])){
 const HAS_DRAFTS = D.rows.some(r=>"doubt" in r);
 const SECTIONS = ["Check first", "Model was confident", "Quotes only"];
 const SECTION_HELP = ["The model was unsure, found the subject absent or not the main speaker, or has no draft",
- "The model answered with high confidence. Its draft is a suggestion, never an answer", "No recording questions, only flagged quotes"];
+ "The model answered with high confidence. Its draft is a suggestion, never an answer", "No item questions, only flagged quotes"];
 const section = r => !HAS_DRAFTS ? 0 : !r.ask ? 2 : (r.doubt||[]).length ? 0 : 1;
 const recs = Object.values(REC).sort((a,b)=>section(a)-section(b) || (a.person.split(" ").pop()+a.person+a.upload).localeCompare(b.person.split(" ").pop()+b.person+b.upload));
 // A page with no recording-level questions is only quotes.
@@ -114,7 +114,7 @@ function renderList(){
    const all=recs.filter(r=>section(r)===sec);
    h+=`<div class="sec" title="${esc(SECTION_HELP[sec])}">${SECTIONS[sec]} <small>· ${all.filter(complete).length} of ${all.length} checked</small></div>`;}
   h+= CAPTIONS_ONLY
-   ? `<div class="grp"><b>${esc(person)}</b><span title="recordings with a saved caption correction">${p.fixed} of ${p.n} corrected</span></div>`
+   ? `<div class="grp"><b>${esc(person)}</b><span title="items with a saved caption correction">${p.fixed} of ${p.n} corrected</span></div>`
    : QUOTE_ONLY
    ? `<div class="grp"><b>${esc(person)}</b><span class="${p.qa===p.q?"ok":""}" title="quotes with a saved answer">${p.qa} of ${p.q} quotes answered</span></div>`
    : !CHECK
@@ -127,9 +127,9 @@ function renderList(){
  el("list").innerHTML = h || `<div class="item">Nothing here. ${filter==="todo"?"Everything has an answer.":""}</div>`;
  const done=recs.filter(complete).length, q=recs.reduce((n,r)=>n+r.quotes.length,0);
  if(CAPTIONS_ONLY){const fixed=recs.filter(r=>correctionAnswers[r.key]?.edits?.length).length;
-  el("count").textContent=`${fixed} of ${recs.length} recordings have caption corrections`;
+  el("count").textContent=`${fixed} of ${recs.length} items have caption corrections`;
   el("bar").style.width=(100*fixed/(recs.length||1)).toFixed(1)+"%"; return;}
- el("count").textContent=`${done} of ${recs.length} ${!CHECK&&!QUOTE_ONLY?"items done":"recordings checked"}${q?` · ${recs.reduce((n,r)=>n+r.quotes.filter(c=>(attrib[c.qid]||{}).answer).length,0)} of ${q} quotes`:""}`;
+ el("count").textContent=`${done} of ${recs.length} ${!CHECK&&!QUOTE_ONLY?"items done":"items checked"}${q?` · ${recs.reduce((n,r)=>n+r.quotes.filter(c=>(attrib[c.qid]||{}).answer).length,0)} of ${q} quotes`:""}`;
  el("bar").style.width=(100*done/(recs.length||1)).toFixed(1)+"%";}
 
 function opt(store, id, field, value, label, key, cls=""){
@@ -162,11 +162,11 @@ function draftCard(r){
 
 function renderDetail(){
  const r=curRec();
- if(!r){el("detail").innerHTML='<p class="sub">Pick a recording on the left.</p>';return;}
+ if(!r){el("detail").innerHTML='<p class="sub">Pick an item on the left.</p>';return;}
  const l=labels[r.key]||{}, start=r.duration?Math.floor(r.duration*0.2):0;
  const hints=(r.hints||[]).map(h=>`<span class="chip">${esc(h)}</span>`).join("")
   + (r.mentions!=null?`<span class="chip info">${esc(r.mentions)} mention${r.mentions===1?"":"s"} of the name in the transcript</span>`:"");
- const ask = r.ask ? `<section class="mode" data-mode="checklist"><h3 class="mode-hd">Checklist<small>about this recording</small></h3>
+ const ask = r.ask ? `<section class="mode" data-mode="checklist"><h3 class="mode-hd">Checklist<small>about this item</small></h3>
    ${FIELDS.map((f,i)=>{
     const cur=(f.options||[]).find(o=>o.value===l[f.name]);
     return `<div class="q"><label class="l">${i+1} · ${esc(f.label)}<small>${esc(f.help||"")}</small></label><div class="opts">${(f.options||[]).map(o=>opt(labels,r.key,f.name,o.value,o.label,o.key,o.cls||"")).join("")}</div></div>`
@@ -188,7 +188,7 @@ function renderDetail(){
  // With no checklist and no passages the transcript is the whole task, so it is open.
  const whole = !r.ask && !r.quotes.length;
  const extra = (!r.quotes.length || !HAS("speakers")) && (HAS("speakers")||HAS("captions"))
-  ? `<details class="range-extra" ${whole?"open":""}><summary>${HAS("speakers")?(whole?"Mark who speaks in this transcript":"Mark speaker ranges in this recording (optional)"):"Correct the captions of this recording"}</summary><div data-span-editor="-1">Loading transcript…</div></details>` : "";
+  ? `<details class="range-extra" ${whole?"open":""}><summary>${HAS("speakers")?(whole?"Mark who speaks in this transcript":"Mark speaker ranges in this transcript (optional)"):"Correct the captions of this transcript"}</summary><div data-span-editor="-1">Loading transcript…</div></details>` : "";
  const itemNote = !r.ask ? `<label class="note">Note on this item <small>optional</small><textarea data-note="${esc(r.key)}" ${writable?"":"disabled"}>${esc((reviewState.notes[r.key]||{}).text||"")}</textarea></label>` : "";
  const doneBtn = !CAPTIONS_ONLY && !r.ask && !r.quotes.length
   ? `<button type="button" class="opt ${reviewState.done[r.key]?"y":""}" id="done" aria-pressed="${!!reviewState.done[r.key]}" ${writable?"":"disabled"}>${reviewState.done[r.key]?"Done ✓":"Mark this item done"}</button>` : "";
@@ -206,7 +206,7 @@ function renderDetail(){
   </div>`;
  el("status").textContent = CAPTIONS_ONLY ? "Captions: correct any errors you notice; there is nothing else to answer"
   : complete(r) ? "All answered" : !r.ask && !r.quotes.length ? "Mark who speaks, then mark the item done"
-  : `${outstanding(r)} answer${outstanding(r)===1?"":"s"} left on this recording`;
+  : `${outstanding(r)} answer${outstanding(r)===1?"":"s"} left on this item`;
  el("detail").querySelectorAll("button[data-f]").forEach(b=>b.onclick=()=>setField(labels, b.dataset.id, b.dataset.f, JSON.parse(b.dataset.v)));
  el("detail").querySelectorAll(".qitem").forEach(n=>n.onclick=()=>{focusQ=+n.dataset.q;});
  mountSpanEditors(r);
@@ -237,7 +237,7 @@ function setField(store, id, f, v, quiet){
  if(!quiet){renderList();renderDetail();}
  const st=el("status");st&&(st.textContent="Saving…",st.className="status");
  queue[id]=(queue[id]||Promise.resolve()).then(()=>saver.put("labels",id,next)).then(()=>{
-  if(el("status")&&cur===id) el("status").textContent=complete(curRec())?"All answered":`${outstanding(curRec())} answers left on this recording`;
+  if(el("status")&&cur===id) el("status").textContent=complete(curRec())?"All answered":`${outstanding(curRec())} answers left on this item`;
  }).catch(e=>{
   if(el("status")){el("status").textContent="Not saved: "+(e&&e.message||e)+". Reload and try again.";el("status").className="status err";}
  });
@@ -271,10 +271,17 @@ el("list").addEventListener("click", e=>{const n=e.target.closest(".item[data-k]
 el("list").addEventListener("keydown", e=>{if(e.key==="Enter"){const n=e.target.closest(".item[data-k]"); n&&select(n.dataset.k);}});
 if(CAPTIONS_ONLY) for(const [id,f] of [["f-todo","todo"],["f-all","all"],["f-done","done"]]) el(id).setAttribute("aria-pressed", f===filter);
 for(const [id,f] of [["f-todo","todo"],["f-all","all"],["f-done","done"]]) el(id).onclick=()=>{filter=f; for(const b of ["f-todo","f-all","f-done"]) el(b).setAttribute("aria-pressed", b===id); renderList();};
-el("legend").innerHTML = `<span class="dot done inline"></span> verified · <span class="dot rej inline"></span> excluded or a misattributed quote · <span class="dot part inline"></span> partly answered`;
+// The key names only the states this dataset can reach: red needs a checklist that can
+// exclude an item, or a quote that verbatim's subject did not say (recState).
+const HAS_QUOTES = recs.some(r=>r.quotes.length);
+const REJECTS = [CHECK && CHECK.accept_when_true.length ? "excluded" : "",
+ LEGACY_SUBJECT && HAS_QUOTES ? "a misattributed quote" : ""].filter(Boolean);
+el("legend").innerHTML = CAPTIONS_ONLY ? `<span class="dot part inline"></span> has corrections`
+ : `<span class="dot done inline"></span> done · <span class="dot part inline"></span> in progress`
+  + (REJECTS.length ? ` · <span class="dot rej inline"></span> ${REJECTS.join(" or ")}` : "");
 el("keyhelp").innerHTML = (QUOTE_ONLY || !CHECK
- ? "Keys: " : "Keys: " + FIELDS.map(f=>`${fieldKeys(f)} ${esc(f.draft_label||f.label)}`).join(" · ") + " · quotes: ")
- + "<b>[</b>/<b>]</b> move between quotes · <b>j</b>/<b>k</b> next recording"
+ ? "Keys: " : "Keys: " + FIELDS.map(f=>`${fieldKeys(f)} ${esc(f.draft_label||f.label)}`).join(" · ") + (HAS_QUOTES ? " · quotes: " : " · "))
+ + (HAS_QUOTES ? "<b>[</b>/<b>]</b> move between quotes · " : "") + "<b>j</b>/<b>k</b> next item"
  + (S.media ? " · <b>v</b> open video" : "")
  + (HAS("speakers") && SPEAKERS.length ? " · selected words: " + [...SPEAKERS, UNCLEAR].map(s=>`<b>${esc(s.key)}</b> ${esc(fillLabel(s.label, {person:"subject"}))}`).join(" · ") : "");
 if(S.projects.length>1){const box=el("projects"); box.hidden=false;
