@@ -1,0 +1,263 @@
+<!doctype html><html lang="en"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>From original conversation to reviewed labels — data examples and schemas</title>
+<style>body{margin:0;background:#f8fafc;color:#172033;font:18px/1.55 system-ui,sans-serif}main{max-width:1120px;margin:auto;padding:32px}h1{font-size:30px}h2{font-size:24px;margin:0}h3{font-size:18px}section{background:white;border:1px solid #cbd5e1;border-radius:10px;margin:24px 0;padding:24px;overflow-wrap:anywhere}.columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f1f5f9;padding:16px;border-radius:6px;font:16px/1.6 ui-monospace,monospace}li{margin:8px 0}a{color:#1d4ed8}.meta{color:#475569}@media(max-width:720px){.columns{display:block}main{padding:16px}}</style>
+<main><h1>From original conversation to reviewed labels — data examples and schemas</h1>
+<p>Match the bracketed data IDs to the diagram arrows and stores. These cards explain records, not extra running components. Relationships below describe data, not execution order.</p>
+<section id="source-item"><h2>[source-item] Original source and geometry</h2>
+<p class="meta">json · existing · verified</p>
+<p>Store: Private dataset files [dataset-files]</p>
+<p>Original text and immutable whitespace-token coordinates. Caption headers remain source metadata, not speaker labels.</p>
+<h3>Where this data travels</h3><ul><li>Input to Prepare original speech [source-preparation]</li><li>Input to Export labels with their origin [export-builder]</li></ul>
+<div class="columns"><div><h3>Fields and constraints</h3>
+<ul><li>key: recording identifier</li><li>text: exact original string</li><li>text_sha256: SHA-256 of UTF-8 text</li><li>token_count and tokens: matching whitespace tokens</li><li>meta: end-exclusive header ranges</li><li>segments: original label, header/body token ranges, t_start, nullable t_end</li></ul>
+</div><div>
+<h3>Synthetic example</h3><p>Illustrative values; not an observed session.</p><pre>{
+  &quot;key&quot;: &quot;calls/example&quot;,
+  &quot;text&quot;: &quot;00:00:00.000 --&gt; 00:00:01.000\nSpeaker 1: Hello Jane.\n\n00:00:01.000 --&gt; 00:00:02.000\nUnknown: Hi Sam.\n&quot;,
+  &quot;text_sha256&quot;: &quot;f684b5358e9db40010384287b65324c7b0f9411bfa48c8d98704c5e9e6e89f89&quot;,
+  &quot;token_count&quot;: 13,
+  &quot;tokens&quot;: [
+    &quot;00:00:00.000&quot;,
+    &quot;--&gt;&quot;,
+    &quot;00:00:01.000&quot;,
+    &quot;Speaker&quot;,
+    &quot;1:&quot;,
+    &quot;Hello&quot;,
+    &quot;Jane.&quot;,
+    &quot;00:00:01.000&quot;,
+    &quot;--&gt;&quot;,
+    &quot;00:00:02.000&quot;,
+    &quot;Unknown:&quot;,
+    &quot;Hi&quot;,
+    &quot;Sam.&quot;
+  ],
+  &quot;meta&quot;: [
+    [
+      0,
+      5
+    ],
+    [
+      7,
+      11
+    ]
+  ],
+  &quot;segments&quot;: [
+    {
+      &quot;label&quot;: &quot;Speaker 1&quot;,
+      &quot;t_start&quot;: 0.0,
+      &quot;t_end&quot;: 1.0,
+      &quot;header&quot;: [
+        0,
+        5
+      ],
+      &quot;body&quot;: [
+        5,
+        7
+      ]
+    },
+    {
+      &quot;label&quot;: &quot;Unknown&quot;,
+      &quot;t_start&quot;: 1.0,
+      &quot;t_end&quot;: 2.0,
+      &quot;header&quot;: [
+        7,
+        11
+      ],
+      &quot;body&quot;: [
+        11,
+        13
+      ]
+    }
+  ]
+}</pre>
+</div></div>
+<p class="meta">Schema evidence: src/transcript_labeling/items.py; src/transcript_labeling/formats.py; src/transcript_labeling/tokens.py</p>
+</section>
+<section id="inference-request"><h2>[inference-request] Prepared private request</h2>
+<p class="meta">Format not described in this model · existing · verified</p>
+<p>Store: Private inference artifacts [run-artifacts]</p>
+<p>All original speech with source-token markers, identity metadata and hashes. The complete request stays local; only its prompt crosses the adapter boundary.</p>
+<h3>Where this data travels</h3><ul><li>Prepare original speech -&gt; Run one configured attempt: Pass the prepared request [prepare-request]</li><li>Run one configured attempt -&gt; Resolve exact turn starts: Validate response against its prepared source [resolve-attempt]</li><li>Output from Prepare original speech [source-preparation]</li><li>Input to Run one configured attempt [adapter-runner]</li><li>Input to Resolve exact turn starts [exact-resolver]</li></ul>
+<div class="columns"><div><h3>Fields and constraints</h3>
+<ul><li>schema_version: 1</li><li>source: explicit original-text/token/meta allowlist</li><li>speakers: [{id,description}] and unclear: id</li><li>speech: [{index,text}]</li><li>marker_every: positive integer; default 20 speech words</li><li>anchor_words: positive integer; default 8 exact words</li><li>prompt, prompt_sha256, request_sha256: reproducible identity</li></ul>
+</div><div>
+<h3>Example</h3><p>No example supplied; use the schema at left.</p>
+</div></div>
+<p class="meta">Schema evidence: src/transcript_labeling/contextual.py; src/transcript_labeling/contextual.py</p>
+</section>
+<section id="adapter-call"><h2>[adapter-call] Adapter standard input</h2>
+<p class="meta">Format not described in this model · existing · verified</p>
+<p>Only the generated prompt, requested model and response schema cross into the selected adapter.</p>
+<h3>Where this data travels</h3><ul><li>Run one configured attempt -&gt; Caller model operation: Send prompt through stdin; await one adapter result [invoke-adapter]</li><li>Input to Caller model operation [caller-model]</li></ul>
+<div class="columns"><div><h3>Fields and constraints</h3>
+<ul><li>prompt: original-speech prompt string</li><li>requested_model: explicit model name</li><li>response_schema: JSON Schema for turns with marker, first_words and speaker</li></ul>
+</div><div>
+<h3>Example</h3><p>No example supplied; use the schema at left.</p>
+</div></div>
+<p class="meta">Schema evidence: src/transcript_labeling/contextual_cli.py; src/transcript_labeling/contextual.py</p>
+</section>
+<section id="model-response"><h2>[model-response] Untrusted response with identity evidence</h2>
+<p class="meta">json · existing · verified</p>
+<p>Store: Private inference artifacts [run-artifacts]</p>
+<p>Exact model response text plus selected-versus-served identity evidence. A CLI model argument alone proves selection only.</p>
+<h3>Where this data travels</h3><ul><li>Caller model operation -&gt; Run one configured attempt: Return exact response and identity evidence [adapter-response]</li><li>Run one configured attempt -&gt; Resolve exact turn starts: Validate response against its prepared source [resolve-attempt]</li><li>Output from Caller model operation [caller-model]</li><li>Input to Resolve exact turn starts [exact-resolver]</li></ul>
+<div class="columns"><div><h3>Fields and constraints</h3>
+<ul><li>response: untouched JSON response string</li><li>requested_model: exact selected model</li><li>served_model: same model when reported; null when unverified</li><li>model_identity: reported or unverified</li><li>transport: optional caller evidence object</li></ul>
+</div><div>
+<h3>Synthetic example</h3><p>Illustrative values; not an observed session.</p><pre>{
+  &quot;response&quot;: &quot;{\&quot;turns\&quot;: [{\&quot;marker\&quot;: 5, \&quot;first_words\&quot;: \&quot;Hello Jane. Hi Sam.\&quot;, \&quot;speaker\&quot;: \&quot;sam\&quot;}, {\&quot;marker\&quot;: 5, \&quot;first_words\&quot;: \&quot;Hi Sam.\&quot;, \&quot;speaker\&quot;: \&quot;jane\&quot;}]}&quot;,
+  &quot;requested_model&quot;: &quot;chosen-model&quot;,
+  &quot;served_model&quot;: null,
+  &quot;model_identity&quot;: &quot;unverified&quot;
+}</pre>
+</div></div>
+<p class="meta">Schema evidence: src/transcript_labeling/contextual.py</p>
+</section>
+<section id="suggestion-bundle"><h2>[suggestion-bundle] Validated tentative suggestions</h2>
+<p class="meta">json · existing · verified</p>
+<p>Store: Private inference artifacts [run-artifacts]</p>
+<p>Source-pinned, ordered speech ranges and provenance. These are proposals, never owner actions.</p>
+<h3>Where this data travels</h3><ul><li>Resolve exact turn starts -&gt; Run one configured attempt: Return validated proposal ranges [resolved-bundle]</li><li>Resolve exact turn starts -&gt; Validate and save review data: Caller explicitly imports or replaces suggestions [attach-bundle]</li><li>Output from Run one configured attempt [adapter-runner]</li><li>Output from Resolve exact turn starts [exact-resolver]</li><li>Input to Validate and save review data [review-service]</li></ul>
+<div class="columns"><div><h3>Fields and constraints</h3>
+<ul><li>schema_version: 1</li><li>text_sha256 and token_count: original source identity</li><li>ranges: [{start,end,speaker,source:contextual_model}]</li><li>provenance: method, requested_model, served_model, model_identity, prompt_sha256, request_sha256, response_sha256, run_id; optional transport</li></ul>
+</div><div>
+<h3>Synthetic example</h3><p>Illustrative values; not an observed session.</p><pre>{
+  &quot;schema_version&quot;: 1,
+  &quot;text_sha256&quot;: &quot;f684b5358e9db40010384287b65324c7b0f9411bfa48c8d98704c5e9e6e89f89&quot;,
+  &quot;token_count&quot;: 13,
+  &quot;ranges&quot;: [
+    {
+      &quot;start&quot;: 5,
+      &quot;end&quot;: 7,
+      &quot;speaker&quot;: &quot;sam&quot;,
+      &quot;source&quot;: &quot;contextual_model&quot;
+    },
+    {
+      &quot;start&quot;: 11,
+      &quot;end&quot;: 13,
+      &quot;speaker&quot;: &quot;jane&quot;,
+      &quot;source&quot;: &quot;contextual_model&quot;
+    }
+  ],
+  &quot;provenance&quot;: {
+    &quot;method&quot;: &quot;contextual_speaker_turns&quot;,
+    &quot;requested_model&quot;: &quot;chosen-model&quot;,
+    &quot;served_model&quot;: null,
+    &quot;model_identity&quot;: &quot;unverified&quot;,
+    &quot;prompt_sha256&quot;: &quot;294111058b8958760831b8c4d75856b5fcda9b7a46aa2dff35abaff5eed16964&quot;,
+    &quot;request_sha256&quot;: &quot;aa2fca86540b36fd6a2ff7e54cecd4cb92055582669386a16fb56dbf4543032d&quot;,
+    &quot;response_sha256&quot;: &quot;d9bb6d56e532b693ac74fac26bb201ca9d5f1e9728d8c96135401ab39104e571&quot;,
+    &quot;run_id&quot;: &quot;synthetic-run&quot;
+  }
+}</pre>
+</div></div>
+<p class="meta">Schema evidence: src/transcript_labeling/contextual.py; src/transcript_labeling/suggestions.py</p>
+</section>
+<section id="item-drafts"><h2>[item-drafts] Current and previous draft bundles</h2>
+<p class="meta">Format not described in this model · existing · verified</p>
+<p>Store: Private dataset files [dataset-files]</p>
+<p>Draft history retains older proposals and their model provenance. It can resolve recorded confirmation hashes but cannot reconstruct missing or merely annotation-level historical links.</p>
+<h3>Where this data travels</h3><ul><li>Output from Validate and save review data [review-service]</li><li>Input to Export labels with their origin [export-builder]</li></ul>
+<div class="columns"><div><h3>Fields and constraints</h3>
+<ul><li>suggestions: contextual or imported source-label ranges</li><li>suggestions_sha256: digest of ranges</li><li>suggestion_provenance: contextual request/model evidence when present</li><li>suggestion_history: prior ranges, digest and provenance</li><li>suggestion_bundle_sha256: response digest of current ranges plus provenance for guarded updates</li></ul>
+</div><div>
+<h3>Example</h3><p>No example supplied; use the schema at left.</p>
+</div></div>
+<p class="meta">Schema evidence: src/transcript_labeling/suggestions.py; src/transcript_labeling/suggestions.py; src/transcript_labeling/formats.py</p>
+</section>
+<section id="review-projection"><h2>[review-projection] Browser reading and visible attribution</h2>
+<p class="meta">Format not described in this model · existing · verified</p>
+<p>Source tokens, current draft visibility and human overlays drive the reading. History is excluded and blind suggestions are omitted server-side.</p>
+<h3>Where this data travels</h3><ul><li>Validate and save review data -&gt; Read and correct the conversation: Serve the permitted reading and overlays [show-review]</li><li>Read and correct the conversation -&gt; Person reviewing the transcript: Display grouped speech and original caption details [person-reads]</li><li>Output from Validate and save review data [review-service]</li><li>Input to Read and correct the conversation [review-page]</li><li>Input to Person reviewing the transcript [reviewer]</li></ul>
+<div class="columns"><div><h3>Fields and constraints</h3>
+<ul><li>source token indices and token_kinds</li><li>current visible suggestions; suggestions_hidden count otherwise</li><li>original caption intervals and labels</li><li>human ranges and correction overlays loaded separately</li><li>reveal: always or after_answer; saved reveal events are owner actions</li></ul>
+</div><div>
+<h3>Example</h3><p>No example supplied; use the schema at left.</p>
+</div></div>
+<p class="meta">Schema evidence: src/transcript_labeling/service.py; src/transcript_labeling/page/span_editor.js; src/transcript_labeling/page/span_editor.js</p>
+</section>
+<section id="human-annotations"><h2>[human-annotations] Explicit human speaker ranges</h2>
+<p class="meta">json · existing · verified</p>
+<p>Store: Private dataset files [dataset-files]</p>
+<p>New confirmations retain exact range-level draft hashes. Legacy annotation-level evidence is marked separately; missing historical links remain absent and cannot be reconstructed from draft history.</p>
+<h3>Where this data travels</h3><ul><li>Person reviewing the transcript -&gt; Read and correct the conversation: Confirm speakers or correct wording [person-edits]</li><li>Read and correct the conversation -&gt; Validate and save review data: Save explicit human edits with source and version checks [submit-review]</li><li>Input to Validate and save review data [review-service]</li><li>Output from Read and correct the conversation [review-page]</li><li>Output from Person reviewing the transcript [reviewer]</li><li>Input to Export labels with their origin [export-builder]</li></ul>
+<div class="columns"><div><h3>Fields and constraints</h3>
+<ul><li>key, text_sha256, token_count: matching source identity</li><li>ranges: ordered non-overlapping {start,end,speaker,origin}</li><li>origin: human, model_confirmed, or suggestion_confirmed; historical model_confirmed may refer to imported tags</li><li>range suggestions_sha256: optional digest of proposed ranges seen at confirmation</li><li>range suggestion_bundle_sha256: optional digest including model provenance</li><li>range suggestion_evidence_scope: range for new confirmations; legacy_annotation for historical annotation-level evidence</li><li>Missing legacy hashes remain absent across later saves; no current bundle is attached retroactively</li><li>checked_by: assigned by server</li><li>top-level suggestions_sha256 and suggestion_bundle_sha256: current annotation-save context, not a substitute for per-range provenance</li><li>answers version: browser stale-write guard</li></ul>
+</div><div>
+<h3>Synthetic example</h3><p>Illustrative values; not an observed session.</p><pre>{
+  &quot;key&quot;: &quot;calls/example&quot;,
+  &quot;text_sha256&quot;: &quot;f684b5358e9db40010384287b65324c7b0f9411bfa48c8d98704c5e9e6e89f89&quot;,
+  &quot;token_count&quot;: 13,
+  &quot;ranges&quot;: [
+    {
+      &quot;start&quot;: 5,
+      &quot;end&quot;: 7,
+      &quot;speaker&quot;: &quot;sam&quot;,
+      &quot;origin&quot;: &quot;model_confirmed&quot;,
+      &quot;suggestion_evidence_scope&quot;: &quot;legacy_annotation&quot;
+    },
+    {
+      &quot;start&quot;: 11,
+      &quot;end&quot;: 13,
+      &quot;speaker&quot;: &quot;jane&quot;,
+      &quot;origin&quot;: &quot;model_confirmed&quot;,
+      &quot;suggestions_sha256&quot;: &quot;aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&quot;,
+      &quot;suggestion_bundle_sha256&quot;: &quot;bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&quot;,
+      &quot;suggestion_evidence_scope&quot;: &quot;range&quot;
+    }
+  ],
+  &quot;checked_by&quot;: &quot;synthetic reviewer&quot;,
+  &quot;suggestions_sha256&quot;: &quot;aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&quot;,
+  &quot;suggestion_bundle_sha256&quot;: &quot;bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&quot;
+}</pre>
+</div></div>
+<p class="meta">Schema evidence: src/transcript_labeling/spans.py; src/transcript_labeling/service.py; src/transcript_labeling/page/span_editor.js</p>
+</section>
+<section id="caption-corrections"><h2>[caption-corrections] Human wording overlays</h2>
+<p class="meta">Format not described in this model · existing · verified</p>
+<p>Store: Private dataset files [dataset-files]</p>
+<p>Replacement wording is anchored to original speech tokens. Saving adds a revision and history without changing the source or renumbering speaker ranges.</p>
+<h3>Where this data travels</h3><ul><li>Person reviewing the transcript -&gt; Read and correct the conversation: Confirm speakers or correct wording [person-edits]</li><li>Read and correct the conversation -&gt; Validate and save review data: Save explicit human edits with source and version checks [submit-review]</li><li>Input to Validate and save review data [review-service]</li><li>Output from Read and correct the conversation [review-page]</li><li>Output from Person reviewing the transcript [reviewer]</li><li>Input to Export labels with their origin [export-builder]</li></ul>
+<div class="columns"><div><h3>Fields and constraints</h3>
+<ul><li>key, text_sha256, token_count: source identity</li><li>edits: [{start,end,original,replacement}]</li><li>revision: checked against prior saved value</li><li>checked_by and updated_at: server-owned</li><li>history: previous and next edits per saved revision</li></ul>
+</div><div>
+<h3>Example</h3><p>No example supplied; use the schema at left.</p>
+</div></div>
+<p class="meta">Schema evidence: src/transcript_labeling/corrections.py; src/transcript_labeling/page/corrections.js</p>
+</section>
+<section id="attempt-record"><h2>[attempt-record] Attempt or cache receipt</h2>
+<p class="meta">Format not described in this model · existing · verified</p>
+<p>Store: Private inference artifacts [run-artifacts]</p>
+<p>Raw outputs survive adapter failure. A completion marker is written only after the response resolves successfully.</p>
+<h3>Where this data travels</h3><ul><li>Output from Run one configured attempt [adapter-runner]</li></ul>
+<div class="columns"><div><h3>Fields and constraints</h3>
+<ul><li>identity: request_sha256, explicit model, adapter argv</li><li>attempt record: attempt, exit_code, error category/message, stdout and stderr paths</li><li>success marker: identity and raw_response path</li><li>status: attempted, succeeded, failed, cached, errors</li><li>status: running, succeeded or failed; raw filenames reserve attempt numbers even after interruption</li></ul>
+</div><div>
+<h3>Example</h3><p>No example supplied; use the schema at left.</p>
+</div></div>
+<p class="meta">Schema evidence: src/transcript_labeling/contextual_cli.py</p>
+</section>
+<section id="export-document"><h2>[export-document] Portable review export</h2>
+<p class="meta">Format not described in this model · existing · verified</p>
+<p>Exports distinguish human decisions from optional tentative filling, preserving per-range evidence hashes and whether that evidence is range-level or only legacy annotation-level.</p>
+<h3>Where this data travels</h3><ul><li>Export labels with their origin -&gt; Validate and save review data: Return the provenance-preserving export [return-export]</li><li>Output from Export labels with their origin [export-builder]</li></ul>
+<div class="columns"><div><h3>Fields and constraints</h3>
+<ul><li>schema_version: 1; tool, project, dataset, kind, no_text</li><li>data or named export kinds for all</li><li>suggestions export: current bundle and history</li><li>segment pieces: source offsets, speaker, origin; optional suggestion_source and suggestions_sha256</li><li>no_text: removes transcript and free-form provenance</li><li>confirmed range/piece: optional suggestions_sha256 and suggestion_bundle_sha256</li><li>suggestion_evidence_scope: range or legacy_annotation; missing history is not inferred</li><li>Adjacent human pieces with different evidence remain separate</li></ul>
+</div><div>
+<h3>Example</h3><p>No example supplied; use the schema at left.</p>
+</div></div>
+<p class="meta">Schema evidence: src/transcript_labeling/export3.py; src/transcript_labeling/export3.py; src/transcript_labeling/export3.py; src/transcript_labeling/export3.py</p>
+</section>
+<section id="export-options"><h2>[export-options] Export selection</h2>
+<p class="meta">json · existing · verified</p>
+<p>Caller selects export kind, text omission, and optional suggestion filling.</p>
+<h3>Where this data travels</h3><ul><li>Validate and save review data -&gt; Export labels with their origin: Request export kind, text policy and optional filling [request-export]</li></ul>
+<div class="columns"><div><h3>Fields and constraints</h3>
+<ul><li>kind: spans, segments, focus, corrections, labels, notes, suggestions, or all</li><li>no_text: boolean</li><li>fill: absent or suggestions</li></ul>
+</div><div>
+<h3>Synthetic example</h3><p>Illustrative values; not an observed session.</p><pre>{&quot;kind&quot;:&quot;all&quot;,&quot;no_text&quot;:true}</pre>
+</div></div>
+<p class="meta">Schema evidence: src/transcript_labeling/export3.py; src/transcript_labeling/export3.py</p>
+</section>
+</main></html>

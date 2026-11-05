@@ -1,0 +1,106 @@
+specification {
+  element deterministic { style { shape rectangle color blue } }
+  element bounded_llm { style { shape rectangle color indigo } }
+  element agent { style { shape rectangle color red } }
+  element human { style { shape person color gray } }
+  element client { style { shape browser color blue } }
+  element external { style { shape rectangle color amber } }
+  element datastore { style { shape storage color green } }
+  element queue { style { shape queue color amber } }
+  element scheduler { style { shape rectangle color amber } }
+  element worker { style { shape rectangle color blue } }
+  relationship sync { line solid }
+  relationship async { line dotted }
+}
+model {
+  source_preparation = deterministic 'Prepare original speech' 'Parse source captions without changing text; build a prompt from original speech and supplied identities.' {
+    metadata {
+      lifecycle 'existing'
+      confidence 'verified'
+      source 'src/transcript_labeling/formats.py'
+      source 'src/transcript_labeling/contextual.py'
+      source 'src/transcript_labeling/mcp.py'
+    }
+  }
+  adapter_runner = deterministic 'Run one configured attempt' 'Launch caller-selected executable arguments without a shell; retain raw receipts and cache successful results.' {
+    metadata {
+      lifecycle 'existing'
+      confidence 'verified'
+      source 'src/transcript_labeling/contextual_cli.py'
+    }
+  }
+  caller_model = bounded_llm 'Caller model operation' 'Caller supplies a bounded inference adapter that returns exact response text and identity evidence; provider execution and isolation are outside this package.' {
+    metadata {
+      lifecycle 'uncertain'
+      confidence 'inferred'
+      source 'src/transcript_labeling/contextual_cli.py'
+      source 'docs/CONTEXTUAL.md'
+      model 'Model is explicitly selected by the caller; no package default.'
+      prompt 'contextual.build_request constructs the source-only prompt.'
+      tool 'The adapter must enforce its own tool and network policy; the generic runner does not.'
+    }
+  }
+  exact_resolver = deterministic 'Resolve exact turn starts' 'Require unique exact anchors in marker windows and emit ordered speech-only ranges with hashes and model provenance.' {
+    metadata {
+      lifecycle 'existing'
+      confidence 'verified'
+      source 'src/transcript_labeling/contextual.py'
+      source 'src/transcript_labeling/contextual.py'
+    }
+  }
+  review_service = deterministic 'Validate and save review data' 'Accept validated tentative bundles and authenticated human edits through separate routes; enforce source identity and stale-write checks.' {
+    metadata {
+      lifecycle 'existing'
+      confidence 'verified'
+      source 'src/transcript_labeling/suggestions.py'
+      source 'src/transcript_labeling/agent_api.py'
+      source 'src/transcript_labeling/service.py'
+      source 'src/transcript_labeling/service.py'
+    }
+  }
+  review_page = client 'Read and correct the conversation' 'Group displayed speech by speaker and attribution source while preserving original caption intervals and word anchors.' {
+    metadata {
+      lifecycle 'existing'
+      confidence 'verified'
+      source 'src/transcript_labeling/page/span_editor.js'
+      source 'src/transcript_labeling/page/span_editor.js'
+      source 'src/transcript_labeling/page/corrections.js'
+    }
+  }
+  reviewer = human 'Person reviewing the transcript' 'Confirm or change speakers, mark uncertainty, and correct wording through the browser.' {
+    metadata {
+      lifecycle 'existing'
+      confidence 'verified'
+      source 'src/transcript_labeling/page/span_editor.js'
+      source 'src/transcript_labeling/service.py'
+    }
+  }
+  export_builder = deterministic 'Export labels with their origin' 'Export human labels, correction overlays and tentative provenance separately; fill from suggestions only when explicitly requested.' {
+    metadata {
+      lifecycle 'existing'
+      confidence 'verified'
+      source 'src/transcript_labeling/export3.py'
+      source 'src/transcript_labeling/export3.py'
+      source 'src/transcript_labeling/export3.py'
+    }
+  }
+  source_preparation -[sync]-> adapter_runner 'Pass the prepared request | Prepared private request [inference-request]'
+  adapter_runner -[sync]-> caller_model 'Send prompt through stdin; await one adapter result | Adapter standard input [adapter-call]'
+  caller_model -[sync]-> adapter_runner 'Return exact response and identity evidence | Untrusted response with identity evidence [model-response]'
+  adapter_runner -[sync]-> exact_resolver 'Validate response against its prepared source | Prepared private request [inference-request], Untrusted response with identity evidence [model-response]'
+  exact_resolver -[sync]-> adapter_runner 'Return validated proposal ranges | Validated tentative suggestions [suggestion-bundle]'
+  exact_resolver -[sync]-> review_service 'Caller explicitly imports or replaces suggestions | Validated tentative suggestions [suggestion-bundle]'
+  review_service -[sync]-> review_page 'Serve the permitted reading and overlays | Browser reading and visible attribution [review-projection]'
+  review_page -[sync]-> reviewer 'Display grouped speech and original caption details | Browser reading and visible attribution [review-projection]'
+  reviewer -[sync]-> review_page 'Confirm speakers or correct wording | Explicit human speaker ranges [human-annotations], Human wording overlays [caption-corrections]'
+  review_page -[sync]-> review_service 'Save explicit human edits with source and version checks | Explicit human speaker ranges [human-annotations], Human wording overlays [caption-corrections]'
+  review_service -[sync]-> export_builder 'Request export kind, text policy and optional filling | Export selection [export-options]'
+  export_builder -[sync]-> review_service 'Return the provenance-preserving export | Portable review export [export-document]'
+}
+views {
+  view overview {
+    title 'From original conversation to reviewed labels'
+    include *
+    autoLayout LeftRight
+  }
+}

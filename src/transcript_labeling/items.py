@@ -180,6 +180,9 @@ def add_items(ds: Dataset, state_dir: Path, entries: list[dict], *, upsert: bool
             if key in manifest["items"]:
                 if not upsert:
                     problems.append(f"{key}: already in the dataset; pass --upsert to replace it")
+                elif "suggestion_provenance" in item or "suggestion_provenance" in ds.item(key):
+                    problems.append(f"{key}: contextual suggestions must be changed with the suggestions update "
+                                    "operation, which preserves draft history and checks the prior hash")
                 elif key in answered and manifest["items"][key]["text_sha256"] != item["text_sha256"]:
                     problems.append(f"{key}: its text changed under saved answers")
                 elif key in answered and (ds.item(key).get("meta") or []) != (item.get("meta") or []):

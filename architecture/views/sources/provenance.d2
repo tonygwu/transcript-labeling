@@ -1,0 +1,68 @@
+direction: down
+label: "Preserve source, model evidence and human edits\nWhich records change, and which evidence survives a new suggestion or wording correction?\nOriginal text fixes token coordinates. Private inference artifacts retain the prompt and raw response for offline resolution. A guarded item update replaces only tentative fields and saves draft history. Human labels and wording overlays stay separate. Exports expose each origin and the source hashes; no suggestion becomes human truth automatically. New confirmed ranges retain their own draft and bundle hashes. Legacy annotation evidence is marked separately, and absent historical links remain absent after later saves."
+n_source_preparation: "Prepare original speech\nProgram step - fixed rules | EXISTING\nParse source captions without changing text; build a prompt from original speech and supplied identities." {
+  shape: rectangle
+  style.fill: "#dbeafe"
+  style.stroke: "#2563eb"
+}
+n_exact_resolver: "Resolve exact turn starts\nProgram step - fixed rules | EXISTING\nRequire unique exact anchors in marker windows and emit ordered speech-only ranges with hashes and model provenance." {
+  shape: rectangle
+  style.fill: "#dbeafe"
+  style.stroke: "#2563eb"
+}
+n_review_service: "Validate and save review data\nProgram step - fixed rules | EXISTING\nAccept validated tentative bundles and authenticated human edits through separate routes; enforce source identity and stale-write checks." {
+  shape: rectangle
+  style.fill: "#dbeafe"
+  style.stroke: "#2563eb"
+}
+n_dataset_files: "Private dataset files\nSaved data | EXISTING | [dataset-files]\nKeep original items, tentative draft history, human answers, corrections and review events in separate private JSON files." {
+  shape: cylinder
+  style.fill: "#dcfce7"
+  style.stroke: "#16a34a"
+}
+n_review_page: "Read and correct the conversation\nClient application | EXISTING\nGroup displayed speech by speaker and attribution source while preserving original caption intervals and word anchors." {
+  shape: rectangle
+  style.fill: "#e0f2fe"
+  style.stroke: "#0284c7"
+}
+n_export_builder: "Export labels with their origin\nProgram step - fixed rules | EXISTING\nExport human labels, correction overlays and tentative provenance separately; fill from suggestions only when explicitly requested." {
+  shape: rectangle
+  style.fill: "#dbeafe"
+  style.stroke: "#2563eb"
+}
+n_run_artifacts: "Private inference artifacts\nSaved data | EXISTING | [run-artifacts]\nRetain prepared requests, raw adapter stdout and stderr, attempt records, derived bundles and success markers outside Git." {
+  shape: cylinder
+  style.fill: "#dcfce7"
+  style.stroke: "#16a34a"
+}
+n_dataset_files -> n_source_preparation: "Read an existing original item | Original source and geometry [source-item]"
+n_source_preparation -> n_run_artifacts: "Write the private request | Prepared private request [inference-request]"
+n_run_artifacts -> n_exact_resolver: "Resolve retained response without a model call | Prepared private request [inference-request], Untrusted response with identity evidence [model-response]"
+n_exact_resolver -> n_run_artifacts: "Write the resolved private bundle | Validated tentative suggestions [suggestion-bundle]"
+n_exact_resolver -> n_review_service: "Caller explicitly imports or replaces suggestions | Validated tentative suggestions [suggestion-bundle]"
+n_dataset_files -> n_review_service: "Read source, drafts and owner review state | Original source and geometry [source-item], Current and previous draft bundles [item-drafts], Explicit human speaker ranges [human-annotations], Human wording overlays [caption-corrections]"
+n_review_service -> n_dataset_files: "Replace draft fields under source and bundle guards | Current and previous draft bundles [item-drafts]"
+n_review_service -> n_review_page: "Serve the permitted reading and overlays | Browser reading and visible attribution [review-projection]"
+n_review_page -> n_review_service: "Save explicit human edits with source and version checks | Explicit human speaker ranges [human-annotations], Human wording overlays [caption-corrections]"
+n_review_service -> n_dataset_files: "Write human answers and correction history separately | Explicit human speaker ranges [human-annotations], Human wording overlays [caption-corrections]"
+n_review_service -> n_export_builder: "Request export kind, text policy and optional filling | Export selection [export-options]"
+n_dataset_files -> n_export_builder: "Read original source, drafts and reviewed data | Original source and geometry [source-item], Current and previous draft bundles [item-drafts], Explicit human speaker ranges [human-annotations], Human wording overlays [caption-corrections]"
+n_export_builder -> n_review_service: "Return the provenance-preserving export | Portable review export [export-document]"
+legend: "Key - colors and shapes identify roles" {
+keyclient: "Client application" {
+  shape: rectangle
+  style.fill: "#e0f2fe"
+  style.stroke: "#0284c7"
+}
+keydatastore: "Saved data" {
+  shape: cylinder
+  style.fill: "#dcfce7"
+  style.stroke: "#16a34a"
+}
+keydeterministic: "Program step - fixed rules" {
+  shape: rectangle
+  style.fill: "#dbeafe"
+  style.stroke: "#2563eb"
+}
+keylines: "Solid arrow: synchronous call or data transfer. Dashed arrow: asynchronous, scheduled, or agent launch."
+}

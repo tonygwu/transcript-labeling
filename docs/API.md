@@ -49,6 +49,8 @@ mistakes; it is not authentication, because a caller can name any repository.
 | `POST projects` | `name, writers, repo`; `title` | the new local-only project. Git-private projects are made with `tl project create` only. |
 | `POST datasets` | `project, dataset, config, repo`; `path` (required for a git-private project) | the dataset's folder |
 | `POST items` | `project, dataset, repo, items`; `upsert` | counts. The whole batch is checked before anything is written. An existing key needs `upsert`, and even then a changed text, changed header ranges or a moved or dropped answered passage under saved answers is refused. |
+| `GET item` | `project, dataset, key` | `{item, config, suggestion_bundle_sha256}`: original source item and `{speakers, unclear, reveal}`. This agent-authenticated response includes current suggestions and history, even during blind review. Keep it private. |
+| `POST suggestions` | `project, dataset, repo, key, suggestions, expected_bundle_sha256` | `{key, changed, suggestions, suggestions_sha256, suggestion_bundle_sha256}`: replace one item's contextual drafts under the dataset lock. Preserve source, catalog, human answers, corrections, notes, reveals, Done and Finish. |
 | `POST url` | `project, dataset`; `item` | `url`, a new one-time login link |
 | `GET status` | `project, dataset` | items, items with ranges or corrections, done marks, passages answered, notes, reveals, Finish state, the event count, and the commit state |
 | `GET answers` | `project, dataset` | the answers with passage results derived from the ranges, plus `review` (notes, done marks, reveals, Finish) |
@@ -61,19 +63,96 @@ An item spec in `items` is `{name, text}` plus optional `group` (the key is
 `group/name`; default `item`), `format` (`zoom-notes`, `bracket-ts` or `plain`;
 detected when absent), `row` (catalog fields such as `title` and `person`),
 `focus` (passages to look at first, by token or character offsets),
-`suggest_map` (`"Label=speaker_id,..."`: the file's speaker labels become model
-suggestions) and `source` (an object kept with the item, such as the file
+`suggest_map` (`"Label=speaker_id,..."`: imported speaker tags become suggestions),
+`suggestions` (the contextual envelope below, mutually exclusive with
+`suggest_map`) and `source` (an object kept with the item, such as the file
 name; its `format` is always the parser's). `GET schema?name=item` lists every
 field.
 
 Export kinds: `spans` (the owner's ranges), `segments` (each caption split where
 the owner's ranges split it), `focus` (passage results), `corrections`,
-`labels` (checklist answers) and `notes`. With `no_text`, an export keeps only
+`labels` (checklist answers), `notes`, and `suggestions` (current drafts, source
+identity and provenance, plus every previous draft bundle). With `no_text`, an export keeps only
 a fixed list of structural fields per kind (offsets, ids, speaker ids, origins,
 hashes, times, and checklist answers that are yes or no or one of a field's
 options), so a field added later stays out until someone lists it. Unmarked words are unknown. Suggestions never become labels
 unless `fill=suggestions` asks for it, and then each filled piece says
-`origin: suggestion`.
+`origin: suggestion`, `suggestion_source` and `suggestions_sha256`. The source
+is `segment_label`, `contextual_model`, or `legacy` when an older draft lacks
+one of those source values. Human ranges stay separate: `human` means manually
+marked; new `model_confirmed` ranges mean the owner accepted a contextual draft;
+`suggestion_confirmed` means the owner accepted another suggestion. Existing
+saved origins are never rewritten. Historical `model_confirmed` also covered
+imported tags, so the origin name alone does not establish that a model ran.
+
+### Contextual suggestion envelope
+
+The same JSON object works in a new item spec, `POST suggestions`,
+`tl new --suggestions FILE`, and the MCP `suggestions_file` argument:
+
+```json
+{
+  "schema_version": 1,
+  "text_sha256": "<SHA256 of the exact original UTF-8 text>",
+  "token_count": 4,
+  "ranges": [
+    {"start": 0, "end": 2, "speaker": "a", "source": "contextual_model"},
+    {"start": 2, "end": 4, "speaker": "unclear", "source": "contextual_model"}
+  ],
+  "provenance": {
+    "method": "contextual_speaker_turns",
+    "requested_model": "example-model",
+    "served_model": null,
+    "model_identity": "unverified",
+    "prompt_sha256": "<SHA256>",
+    "request_sha256": "<SHA256>",
+    "response_sha256": "<SHA256>",
+    "run_id": "run-1"
+  }
+}
+```
+
+Offsets are end-exclusive whitespace-token positions in the original text.
+Ranges must be ordered, non-overlapping and contain speech tokens only. The
+resolver splits turns around caption metadata, timestamps and other non-speech
+tokens. A range cannot silently claim those tokens. Every speaker must be in
+the dataset, including its configured uncertain speaker. Missing speech stays
+unassigned; an uncertain suggestion is distinct from an original Unknown tag
+and from the owner's Unsure answer. Ranges may also carry string `turn_id` and
+`reason` fields. They cannot carry a human origin.
+
+Every digest must be a lowercase SHA256. Model identity is `reported` only
+when transport telemetry supplies a nonempty `served_model`; `unverified`
+requires `served_model: null`. A reported model different from the requested
+model is refused. Provenance may include a JSON `transport`
+object for additional evidence. The service validates provenance shape and
+source identity; it does not attest to the truth of a caller's model claim.
+
+Read `GET item` before updating and send its
+`suggestion_bundle_sha256` as `expected_bundle_sha256`. If another writer
+changed the ranges or provenance, the update returns 409. This bundle digest
+includes both; the separate item.suggestions_sha256 still identifies only the
+ranges cited by existing human annotations. An exact retry of the already
+installed ranges and provenance returns `changed: false` without rewriting
+the file or duplicating history. The original text hash and token count are
+checked again under the lock. Historical bundles retain their exact suggestion
+hashes so existing human confirmations remain traceable. Updating suggestions
+does not manufacture an owner event or change the reveal policy.
+
+New confirmations keep suggestions_sha256 and suggestion_bundle_sha256 on each
+range with suggestion_evidence_scope: range. Both hashes survive later human
+edits and exports. Older annotations kept only an item-level hash, which later
+saves could replace while retaining older ranges. When that older hash is copied
+onto a range, suggestion_evidence_scope is legacy_annotation. It identifies the
+old annotation's evidence, not proven evidence for that specific range. Missing
+historical hashes stay absent; history cannot reconstruct the missing link.
+
+Use this operation for an existing contextual item. Full-item `upsert` refuses
+items with contextual provenance because it would discard draft history.
+Legacy imports using only `suggest_map` keep their existing behavior. The
+`suggestions` export is included in `all` for datasets with speaker review.
+Its `no_text` form omits source metadata, model names, run identifiers, reasons
+and transport details; full provenance exports belong in private storage.
 
 ## The browser
 
@@ -109,10 +188,12 @@ note then fails still returns 200, with a `warning`.
 tl init | serve | doctor | mcp
 tl new P/D --from-file PATH [--create-project] [--speakers "id=Label:key,..."] [--suggest-map ...]
            [--focus FILE] [--modes speakers,captions] [--name N] [--group G]
+           [--config FILE] [--reveal always|after_answer] [--suggestions FILE]
 tl project create NAME --git-checkout ABS_PATH [--writer REPO ...] [--branch B]
 tl project list | tl dataset list
 tl dataset create P/D --config FILE [--path REL]
 tl items add P/D --from-file PATH [--upsert] [--name N] [--group G] [--suggest-map ...] [--focus FILE]
+tl suggestions set P/D --item GROUP/NAME --from-file PRIVATE_JSON --expected-bundle-sha256 HASH
 tl url P/D [--item KEY] | tl status P/D [--json] | tl wait P/D --until done --timeout SECONDS
 tl export P/D KIND [--out FILE] [--no-text] [--fill suggestions]
 tl verify P/D [--expect-answers-sha256 H] | tl schema item|dataset|answers|export
@@ -133,8 +214,22 @@ tl verify P/D [--expect-answers-sha256 H] | tl schema item|dataset|answers|expor
 
 ## MCP tools (`tl mcp`)
 
-`new`, `items_add`, `url`, `status`, `wait`, `export`, `verify`, `schema` and
-`doctor`. Paths are absolute: `file`, `focus_file`, and `repo`, which is the
+`new`, `items_add`, `suggestions_set`, `contextual_prepare`, `url`, `status`,
+`wait`, `export`, `verify`, `schema` and `doctor`. Paths are absolute: `file`,
+`focus_file`, `suggestions_file`, `speakers_file`, `out`, and `repo`, which is the
 caller's own checkout. `wait` returns `still_waiting` after at most 50 seconds;
 call it again. `export` writes under `$TL_HOME/exports/` and returns the path,
 size and counts, never the text. MCP calls cannot write git-private projects.
+
+`new` accepts `config` and `reveal: "always" | "after_answer"`. If both specify
+a reveal policy, they must agree. Correction reviews can show suggestions from
+the start with `always`; blind evaluation keeps the default `after_answer`.
+
+`contextual_prepare` takes `project`, `dataset`, `item`, and `speakers_file`.
+The speaker file holds identity descriptions for the model, separate from UI
+labels such as Me and Interviewer. This tool writes a request from the original
+source to a private file and returns its path and hashes. It runs no model and
+includes no human labels or caption corrections. Optional `out` selects the
+private destination. After an external model runner and the resolver produce a
+validated envelope, `suggestions_set` takes `project`, `dataset`, `item`, `repo`,
+`suggestions_file` and `expected_bundle_sha256` to install it.

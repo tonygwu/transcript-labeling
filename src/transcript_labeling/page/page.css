@@ -120,7 +120,7 @@ button:focus-visible,a:focus-visible,textarea:focus-visible,.item:focus-visible{
 .subject{background:var(--yesbg);color:var(--ink)}
 .other{background:var(--nobg);color:var(--ink)}
 .unclear,.conflict{background:var(--warnbg);color:var(--ink)}
-.draft.subject,.draft.other{border-bottom:2px dashed var(--muted)}
+.draft.subject,.draft.other,.draft.unclear{border-bottom:2px dashed var(--muted)}
 .reviewed.subject{border-bottom:2px solid var(--yes)}
 .reviewed.other{border-bottom:2px solid var(--no)}
 .reviewed.unclear,.conflict{border-bottom:2px dotted var(--warn)}
@@ -180,8 +180,20 @@ button:focus-visible,a:focus-visible,textarea:focus-visible,.item:focus-visible{
 .reviewed.spk4{border-bottom:2px groove #B2621F}
 .reviewed.spk5{border-bottom:3px double #4D7A1F}
 .opt.spk0,.opt.spk1,.opt.spk2,.opt.spk3,.opt.spk4,.opt.spk5{background-image:none}
-.seg-head{display:block;margin:12px 0 2px;font-family:var(--mono);font-size:.72rem;color:var(--muted);cursor:pointer;user-select:none;-webkit-user-select:none}
+.seg-head{display:block;margin:12px 0 2px;padding:0;border:0;background:transparent;text-align:left;font-family:var(--mono);font-size:.72rem;color:var(--muted);cursor:pointer;user-select:none;-webkit-user-select:none}
 .seg-head:hover{color:var(--accent)}
+.transcript-view{display:flex;gap:6px;margin-top:12px}
+.transcript-view [aria-pressed=true]{background:var(--accentbg);border-color:var(--accent);color:var(--ink)}
+.conversation-turn+.conversation-turn{margin-top:17px;padding-top:13px;border-top:1px solid var(--rule)}
+.turn-heading{display:flex;align-items:baseline;flex-wrap:wrap;gap:3px 10px;line-height:1.5;margin-bottom:4px;user-select:none;-webkit-user-select:none}
+.turn-heading>span{font-size:.7rem;color:var(--muted)}
+.turn-speaker{font:600 .85rem var(--sans);color:var(--ink);background:transparent;border:0;padding:0;cursor:pointer;text-align:left}
+.turn-speaker:hover{color:var(--accent);text-decoration:underline}
+.turn-source{font-size:.7rem;color:var(--muted);line-height:1.5;margin-top:6px;user-select:none;-webkit-user-select:none}
+.turn-source summary{cursor:pointer;display:list-item;width:fit-content}
+.turn-source p{margin:6px 0}
+.turn-source .seg-head{margin:6px 0}
+.caption-marker-time{font-size:.7rem;font-family:var(--mono);color:var(--muted);user-select:none;-webkit-user-select:none}
 .caption-meta{color:var(--faint);font-size:.8rem;user-select:none;-webkit-user-select:none}
 .qtitle{display:block;font-size:.92rem}
 label.note{display:grid;gap:4px;font-size:.8rem;color:var(--muted)}

@@ -63,6 +63,53 @@ def test_fill_suggestions_fills_only_unmarked_words_and_says_so(zoom_ds):
     assert not seg[2]["reviewed"]
     assert seg[1]["pieces"][1]["origin"] == "human"  # a human range is never replaced
     assert seg[3]["pieces"][0]["speaker"] is None   # Unknown has no mapping, so it stays unknown
+    assert seg[2]["pieces"][0]["suggestion_source"] == "segment_label"
+
+
+def test_contextual_exports_keep_current_and_historical_provenance_separate(zoom_ds, tmp_path):
+    from test_service import contextual_bundle
+    from transcript_labeling.suggestions import suggestion_bundle_hash, update_suggestions
+    item = zoom_ds.item("call/one")
+    start, end = item["segments"][2]["body"]
+    ranges = [{"start": start, "end": end, "speaker": "bo", "source": "contextual_model",
+               "reason": "PRIVATE REASON CANARY"}]
+    bundle = contextual_bundle(item["text"], ranges)
+    bundle["provenance"]["transport"] = {"detail": "PRIVATE TRANSPORT CANARY"}
+    bundle["provenance"]["run_id"] = "PRIVATE RUN CANARY"
+    update_suggestions(zoom_ds, tmp_path / "state", "call/one", bundle, suggestion_bundle_hash(item))
+    full = export_dataset(zoom_ds, "suggestions")["data"]["call/one"]
+    assert full["suggestions"] == ranges and full["suggestion_provenance"] == bundle["provenance"]
+    assert full["suggestion_history"][0]["suggestions"] == item["suggestions"]
+    assert full["suggestion_history"][0]["suggestions_sha256"] == item["suggestions_sha256"]
+    segments = export_dataset(zoom_ds, "segments", fill="suggestions")["data"]["call/one"]
+    assert segments[0]["pieces"][0]["origin"] == "human"
+    assert segments[2]["pieces"][0]["origin"] == "suggestion"
+    assert segments[2]["pieces"][0]["suggestion_source"] == "contextual_model"
+    assert segments[2]["pieces"][0]["suggestions_sha256"] == full["suggestions_sha256"]
+    private_free = export_dataset(zoom_ds, "all", no_text=True, fill="suggestions")
+    assert "PRIVATE" not in json.dumps(private_free)
+    assert "source" not in private_free["suggestions"]["call/one"]
+    assert "model_identity" in private_free["suggestions"]["call/one"]["suggestion_provenance"]
+
+
+def test_confirmed_range_provenance_survives_full_and_no_text_exports(zoom_ds):
+    from transcript_labeling.suggestions import suggestion_bundle_hash
+    item = zoom_ds.item("call/one")
+    evidence = {"suggestions_sha256": item["suggestions_sha256"],
+                "suggestion_bundle_sha256": suggestion_bundle_hash(item), "suggestion_evidence_scope": "range"}
+    answers = load_answers(zoom_ds.answers)
+    answers["spans"]["call/one"]["ranges"][0].update(origin="suggestion_confirmed", **evidence)
+    answers["spans"]["call/one"].update({k: v for k, v in evidence.items() if k != "suggestion_evidence_scope"})
+    zoom_ds.answers.write_text(json.dumps(answers))
+    for no_text in (False, True):
+        spans = export_dataset(zoom_ds, "spans", no_text=no_text)["data"]["call/one"]
+        piece = export_dataset(zoom_ds, "segments", no_text=no_text)["data"]["call/one"][0]["pieces"][0]
+        for field, expected in evidence.items():
+            if field != "suggestion_evidence_scope":
+                assert spans[field] == expected
+            assert spans["ranges"][0][field] == expected
+            assert piece[field] == expected
+        assert piece["origin"] == "suggestion_confirmed"
 
 
 def test_focus_spans_notes_and_all(zoom_ds):

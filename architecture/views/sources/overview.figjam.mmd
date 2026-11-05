@@ -1,0 +1,71 @@
+flowchart LR
+  subgraph viewFrame["From original conversation to reviewed labels"]
+  direction LR
+  viewGuide["How does source text become tentative speaker turns and then human-reviewed output?
+Start with original text and speaker identities. A caller-selected model proposes turns; deterministic code resolves exact words. A separate import attaches proposals. The person reviews the readable conversation, and exports retain the difference between suggestions and human decisions. Existing means implemented in this source, not deployed. The external adapter is an unverified caller dependency."]
+  style viewGuide fill:#ffffff,stroke:#9ca3af,color:#111827
+  n736f757263652d7072657061726174696f6e["Prepare original speech
+Program step - fixed rules | EXISTING
+Parse source captions without changing text; build a prompt from original speech and supplied identities."]
+  n616461707465722d72756e6e6572["Run one configured attempt
+Program step - fixed rules | EXISTING
+Launch caller-selected executable arguments without a shell; retain raw receipts and cache successful results."]
+  n63616c6c65722d6d6f64656c["Caller model operation
+Model call - one bounded task | UNCERTAIN
+Caller supplies a bounded inference adapter that returns exact response text and identity evidence; provider execution and isolation are outside this package."]
+  n65786163742d7265736f6c766572["Resolve exact turn starts
+Program step - fixed rules | EXISTING
+Require unique exact anchors in marker windows and emit ordered speech-only ranges with hashes and model provenance."]
+  n7265766965772d73657276696365["Validate and save review data
+Program step - fixed rules | EXISTING
+Accept validated tentative bundles and authenticated human edits through separate routes; enforce source identity and stale-write checks."]
+  n7265766965772d70616765["Read and correct the conversation
+Client application | EXISTING
+Group displayed speech by speaker and attribution source while preserving original caption intervals and word anchors."]
+  n7265766965776572(["Person reviewing the transcript
+Person | EXISTING
+Confirm or change speakers, mark uncertainty, and correct wording through the browser."])
+  n6578706f72742d6275696c646572["Export labels with their origin
+Program step - fixed rules | EXISTING
+Export human labels, correction overlays and tentative provenance separately; fill from suggestions only when explicitly requested."]
+  n736f757263652d7072657061726174696f6e -->|"Pass the prepared request | Prepared private request [inference-request]"| n616461707465722d72756e6e6572
+  n616461707465722d72756e6e6572 -->|"Send prompt through stdin; await one adapter result | Adapter standard input [adapter-call]"| n63616c6c65722d6d6f64656c
+  n63616c6c65722d6d6f64656c -->|"Return exact response and identity evidence | Untrusted response with identity evidence [model-response]"| n616461707465722d72756e6e6572
+  n616461707465722d72756e6e6572 -->|"Validate response against its prepared source | Prepared private request [inference-request], Untrusted response with identity evidence [model-response]"| n65786163742d7265736f6c766572
+  n65786163742d7265736f6c766572 -->|"Return validated proposal ranges | Validated tentative suggestions [suggestion-bundle]"| n616461707465722d72756e6e6572
+  n65786163742d7265736f6c766572 -->|"Caller explicitly imports or replaces suggestions | Validated tentative suggestions [suggestion-bundle]"| n7265766965772d73657276696365
+  n7265766965772d73657276696365 -->|"Serve the permitted reading and overlays | Browser reading and visible attribution [review-projection]"| n7265766965772d70616765
+  n7265766965772d70616765 -->|"Display grouped speech and original caption details | Browser reading and visible attribution [review-projection]"| n7265766965776572
+  n7265766965776572 -->|"Confirm speakers or correct wording | Explicit human speaker ranges [human-annotations], Human wording overlays [caption-corrections]"| n7265766965772d70616765
+  n7265766965772d70616765 -->|"Save explicit human edits with source and version checks | Explicit human speaker ranges [human-annotations], Human wording overlays [caption-corrections]"| n7265766965772d73657276696365
+  n7265766965772d73657276696365 -->|"Request export kind, text policy and optional filling | Export selection [export-options]"| n6578706f72742d6275696c646572
+  n6578706f72742d6275696c646572 -->|"Return the provenance-preserving export | Portable review export [export-document]"| n7265766965772d73657276696365
+  end
+  style viewFrame fill:#ffffff,stroke:#cbd5e1
+  classDef bounded_llm fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#111827
+  classDef client fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#111827
+  classDef deterministic fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#111827
+  classDef human fill:#f3f4f6,stroke:#4b5563,stroke-width:2px,color:#111827
+  class n736f757263652d7072657061726174696f6e deterministic
+  class n616461707465722d72756e6e6572 deterministic
+  class n63616c6c65722d6d6f64656c bounded_llm
+  class n65786163742d7265736f6c766572 deterministic
+  class n7265766965772d73657276696365 deterministic
+  class n7265766965772d70616765 client
+  class n7265766965776572 human
+  class n6578706f72742d6275696c646572 deterministic
+  subgraph legend["Key"]
+    keyboundedllm["Model call - one bounded task"]
+    class keyboundedllm bounded_llm
+    keyclient["Client application"]
+    class keyclient client
+    keydeterministic["Program step - fixed rules"]
+    class keydeterministic deterministic
+    keyhuman(["Person"])
+    class keyhuman human
+    keylines["Solid arrow: synchronous call or data transfer. Dotted arrow: asynchronous, scheduled, or agent launch."]
+    keystatus["Status words describe implementation: EXISTING, UNCERTAIN. Color describes role, not status."]
+  end
+  style legend fill:#ffffff,stroke:#cbd5e1
+  style keylines fill:#ffffff,stroke:#9ca3af,color:#111827
+  style keystatus fill:#ffffff,stroke:#9ca3af,color:#111827

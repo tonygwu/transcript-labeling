@@ -29,7 +29,7 @@ import subprocess
 
 import pytest
 
-from transcript_labeling.page.assets import asset_bytes, build_app_js
+from transcript_labeling.page.assets import HERE, asset_bytes, build_app_js
 
 #: A stub page for node: enough DOM for the script to render, a local server that
 #: answers with SAVED and records each save, the page opened at START when given,
@@ -541,3 +541,204 @@ def test_a_passage_shows_its_title_why_question_and_note():
 # Marking selected words with a speaker key, header clicks, reveal and Finish need a
 # real DOM selection and the span editor's markup, which this stub DOM does not build;
 # the browser check (Playwright) covers them.
+
+
+def run_span_logic(body):
+    """Run the production editor's pure rendering logic without substituting its functions."""
+    script = "const window={addEventListener(){}};\n" + (HERE / "span_editor.js").read_text()
+    script += "\nconst UNCLEAR={id:'unclear',label:'Unsure'};\n" + body
+    result = subprocess.run([node(), "-"], input=script, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def fragmented_item():
+    # Original headers keep raw token positions; each caption has a different interval.
+    return {"tokens": ["Notes:", "Keep", "fillers.", "00:00:01", "-->", "00:00:02", "Unknown:", "Hi,",
+                       "00:00:02", "-->", "00:00:03", "Speaker", "1:", "um,", "yes.",
+                       "00:00:03", "-->", "00:00:05", "Speaker", "1:", "Thanks.", "How", "are", "you?"],
+            "token_kinds": ["meta"] * 7 + ["speech"] + ["meta"] * 5 + ["speech"] * 2
+                           + ["meta"] * 5 + ["speech"] * 4,
+            "segments": [{"header": [3, 7], "body": [7, 8], "t_start": 1, "t_end": 2, "label": "Unknown"},
+                         {"header": [8, 13], "body": [13, 15], "t_start": 2, "t_end": 3, "label": "Speaker 1"},
+                         {"header": [15, 20], "body": [20, 24], "t_start": 3, "t_end": 5, "label": "Speaker 1"}],
+            "suggestions": [{"start": 7, "end": 21, "speaker": "ann", "source": "contextual_model"},
+                            {"start": 21, "end": 24, "speaker": "bo", "source": "contextual_model"}]}
+
+
+def test_conversation_groups_fragmented_words_but_keeps_exact_source_ranges_and_notes():
+    data = fragmented_item()
+    got = run_span_logic(f"const data={json.dumps(data)}; console.log(JSON.stringify(transcriptTurns(data,draftStates(data),[],0,24)));")
+    turns = [p for p in got if p["kind"] == "turn"]
+    assert [[u["text"] for u in t["units"]] for t in turns] == [["Hi,", "um,", "yes.", "Thanks."], ["How", "are", "you?"]]
+    assert [(t["start"], t["end"]) for t in turns] == [(7, 21), (21, 24)]
+    assert turns[0]["segments"] == data["segments"]
+    assert turns[1]["segments"] == data["segments"][2:]
+    assert [p["text"] for p in got if p["kind"] == "meta"] == ["Notes:", "Keep", "fillers."]
+
+
+def test_conversation_separates_human_review_from_suggestions_and_keeps_corrections_anchored():
+    data = fragmented_item()
+    got = run_span_logic(f"""
+const data={json.dumps(data)}, states=draftStates(data).map(s=>({{...s}}));
+states[13]={{speaker:'ann',draft:false,source:'human'}};
+const edits=[{{start:21,end:24,original:'How are you?',replacement:'How have you been?'}}];
+console.log(JSON.stringify(transcriptTurns(data,states,edits,0,24)));
+""")
+    turns = [p for p in got if p["kind"] == "turn"]
+    assert [(t["start"], t["end"], t["state"]["draft"]) for t in turns] == [
+        (7, 8, True), (13, 14, False), (14, 21, True), (21, 24, True)]
+    corrected = turns[-1]["units"]
+    assert len(corrected) == 1 and corrected[0]["start"] == 21 and corrected[0]["end"] == 24
+    assert corrected[0]["text"] == "How have you been?" and corrected[0]["edit"]["original"] == "How are you?"
+
+
+def test_unassigned_source_unknown_model_uncertainty_and_human_unsure_stay_distinct():
+    data = fragmented_item()
+    data["suggestions"] = [{"start": 13, "end": 15, "speaker": "unclear", "source": "contextual_model"},
+                           {"start": 20, "end": 24, "speaker": "ann", "source": "segment_label"}]
+    got = run_span_logic(f"""
+const data={json.dumps(data)}, states=draftStates(data).map(s=>({{...s}}));
+states[14]={{speaker:'unclear',draft:false,source:'human'}};
+console.log(JSON.stringify([states[7],states[13],states[14],states[20]].map(s=>({{state:s,description:attributionDescription(s)}}))));
+""")
+    assert [r["description"] for r in got] == ["No attribution", "Contextual model uncertainty (unconfirmed)",
+                                                "Human reviewed", "Imported transcriber tag (unconfirmed)"]
+    assert got[0]["state"]["speaker"] == "unknown"
+
+
+def test_a_correction_spanning_different_speakers_remains_a_conflict():
+    data = fragmented_item()
+    got = run_span_logic(f"""
+const data={json.dumps(data)};
+console.log(JSON.stringify(transcriptTurns(data,draftStates(data),[{{start:20,end:24,original:'Thanks. How are you?',replacement:'Thanks. How have you been?'}}],0,24)));
+""")
+    turn = [p for p in got if p["kind"] == "turn"][-1]
+    assert turn["state"]["speaker"] == "conflict" and turn["units"][0]["end"] == 24
+
+
+def test_confirming_imported_tags_and_contextual_suggestions_preserves_their_origins():
+    got = run_span_logic("""
+const writable=true,SPEAKER_IDS=['ann','bo'];
+const recording={key:'call/one',quotes:[],excerpts:[]};
+transcriptCache[recording.key]={tokens:['Hi,','um,','yes.','Thanks.'],suggestions:[
+ {start:0,end:2,speaker:'ann',source:'segment_label'},
+ {start:2,end:4,speaker:'ann',source:'contextual_model'}]};
+spanAnswers[recording.key]={ranges:[{start:3,end:4,speaker:'bo',origin:'human'}]};
+saveRanges=(r,ranges)=>console.log(JSON.stringify(ranges));
+confirmDrafts(recording,-1);
+""")
+    assert got == [{"start": 0, "end": 2, "speaker": "ann", "origin": "suggestion_confirmed"},
+                   {"start": 2, "end": 3, "speaker": "ann", "origin": "model_confirmed"},
+                   {"start": 3, "end": 4, "speaker": "bo", "origin": "human"}]
+
+
+def test_source_headers_keep_fractional_timestamps_without_inventing_an_end():
+    got = run_span_logic("""
+const esc=s=>s;
+const data={tokens:['[00:00:01.250]','Speaker','1:','Hi.']};
+console.log(JSON.stringify(sourceHeader(data,{header:[0,3],body:[3,4],t_start:1.25,t_end:null,label:'Speaker 1'})));
+""")
+    assert got == "[00:00:01.250] Speaker 1:"
+
+
+def test_confirming_new_draft_keeps_prior_range_evidence_separate():
+    got = run_span_logic("""
+const writable=true,SPEAKER_IDS=['ann','bo'];
+const recording={key:'call/one',quotes:[],excerpts:[]};
+const oldHash='a'.repeat(64),newHash='b'.repeat(64),oldBundle='c'.repeat(64),newBundle='d'.repeat(64);
+spanAnswers[recording.key]={suggestions_sha256:oldHash,suggestion_bundle_sha256:oldBundle,
+ ranges:[{start:0,end:2,speaker:'ann',origin:'model_confirmed'}]};
+transcriptCache[recording.key]={tokens:['Hi,','um,','yes.','Thanks.'],suggestions_sha256:newHash,
+ suggestion_bundle_sha256:newBundle,suggestions:[{start:0,end:4,speaker:'ann',source:'contextual_model'}]};
+saveRanges=(r,ranges)=>console.log(JSON.stringify(ranges));
+confirmDrafts(recording,-1);
+""")
+    assert got == [
+        {"start": 0, "end": 2, "speaker": "ann", "origin": "model_confirmed",
+         "suggestions_sha256": "a" * 64, "suggestion_bundle_sha256": "c" * 64, "suggestion_evidence_scope": "legacy_annotation"},
+        {"start": 2, "end": 4, "speaker": "ann", "origin": "model_confirmed",
+         "suggestions_sha256": "b" * 64, "suggestion_bundle_sha256": "d" * 64, "suggestion_evidence_scope": "range"},
+    ]
+
+
+def test_range_split_retains_confirmation_evidence_without_guessing_legacy_bundle():
+    got = run_span_logic("""
+const recording={key:'call/one',quotes:[]};
+spanAnswers[recording.key]={suggestions_sha256:'a'.repeat(64),ranges:[
+ {start:0,end:6,speaker:'ann',origin:'model_confirmed'}]};
+console.log(JSON.stringify(paintRanges(humanRanges(recording),2,4,'bo')));
+""")
+    assert got == [
+        {"start": 0, "end": 2, "speaker": "ann", "origin": "model_confirmed", "suggestions_sha256": "a" * 64, "suggestion_evidence_scope": "legacy_annotation"},
+        {"start": 2, "end": 4, "speaker": "bo", "origin": "human"},
+        {"start": 4, "end": 6, "speaker": "ann", "origin": "model_confirmed", "suggestions_sha256": "a" * 64, "suggestion_evidence_scope": "legacy_annotation"},
+    ]
+
+
+def test_reveal_refreshes_draft_identity_after_background_update():
+    got = run_span_logic("""
+const data={suggestions:[],suggestions_hidden:1,suggestions_sha256:'old',draftStates:['stale'],suggestion_provenance:{run_id:'old'}};
+applyRevealedSuggestions(data,{suggestions:[{start:0,end:1,speaker:'ann'}],suggestions_sha256:'new',
+ suggestion_bundle_sha256:'bundle',suggestion_provenance:{run_id:'new'}});
+console.log(JSON.stringify(data));
+""")
+    assert got == {"suggestions": [{"start": 0, "end": 1, "speaker": "ann"}], "suggestions_hidden": 0,
+                   "suggestions_sha256": "new", "suggestion_bundle_sha256": "bundle",
+                   "suggestion_provenance": {"run_id": "new"}}
+
+
+def test_legacy_absent_evidence_stays_absent_after_later_saves():
+    got = run_span_logic("""
+const recording={key:'call/one',quotes:[]};
+const out=[];
+for(const old of [{suggestions_sha256:'a'.repeat(64)},{}]){
+ spanAnswers[recording.key]={...old,ranges:[{start:0,end:1,speaker:'ann',origin:'model_confirmed'}]};
+ const first=humanRanges(recording);
+ spanAnswers[recording.key]={suggestions_sha256:'b'.repeat(64),suggestion_bundle_sha256:'c'.repeat(64),ranges:first};
+ out.push({first,second:humanRanges(recording)});
+}
+console.log(JSON.stringify(out));
+""")
+    for row in got:
+        assert row["first"] == row["second"]
+        assert row["second"][0]["suggestion_evidence_scope"] == "legacy_annotation"
+        assert "suggestion_bundle_sha256" not in row["second"][0]
+    assert "suggestions_sha256" not in got[1]["second"][0]
+
+
+def test_long_transcript_coverage_builds_draft_labels_only_once():
+    got = run_span_logic("""
+const recording={key:'call/one',quotes:[],excerpts:[]},cur=recording.key;
+const SPEAKER_IDS=['ann'],correctionAnswers={};
+const document={querySelector:()=>({querySelector:()=>null})};
+editsFor=()=>[];
+transcriptCache[recording.key]={tokens:Array(10000).fill('word'),token_kinds:Array(10000).fill('speech'),times:[],
+ suggestions:[{start:0,end:10000,speaker:'ann',source:'contextual_model'}]};
+let calls=0;const original=draftLabels;
+draftLabels=data=>{calls++;return original(data);};
+conversationMarkup=()=>{throw new Error('count complete');};
+try {drawSpanEditor(recording,-1);} catch(error) {if(error.message!=='count complete')throw error;}
+console.log(JSON.stringify({calls}));
+""")
+    assert got == {"calls": 1}
+
+
+def test_unassigned_speech_groups_only_matching_source_labels():
+    data = fragmented_item()
+    data["suggestions"] = []
+    got = run_span_logic(f"const data={json.dumps(data)}; console.log(JSON.stringify(transcriptTurns(data,draftStates(data),[],0,24)));")
+    turns = [p for p in got if p["kind"] == "turn"]
+    assert [(t["start"], t["end"], t["sourceLabel"]) for t in turns] == [(7, 8, "Unknown"), (13, 24, "Speaker 1")]
+    assert all(t["state"]["speaker"] == "unknown" for t in turns)
+
+
+def test_conversation_keeps_caption_gaps_punctuation_and_explicit_turn_marks():
+    got = run_span_logic("""
+const data={tokens:['Hi.','[00:00:01.250]','um,','—','[inaudible]','Yes.','>>','Thanks.'],
+ token_kinds:['speech','timestamp','speech','punctuation','gap','speech','turn','speech'],suggestions:[
+ {start:0,end:8,speaker:'ann',source:'contextual_model'}]};
+const parts=transcriptTurns(data,draftStates(data),[],0,8);
+console.log(JSON.stringify({words:parts.flatMap(p=>p.units||[p]).map(u=>u.text),turns:parts.filter(p=>p.units).length}));
+""")
+    assert got == {"words": ["Hi.", "[00:00:01.250]", "um,", "—", "[inaudible]", "Yes.", ">>", "Thanks."], "turns": 3}

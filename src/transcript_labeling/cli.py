@@ -86,7 +86,7 @@ def read_transcript(path: str) -> tuple[Path, str]:
     if not p.is_file():
         raise SystemExit(f"REFUSING: {p} is not a file")
     try:
-        return p, p.read_text(encoding="utf-8")
+        return p, p.read_bytes().decode("utf-8")
     except UnicodeDecodeError:
         raise SystemExit(f"REFUSING: {p} is not UTF-8 text")
 
@@ -116,6 +116,8 @@ def item_spec(args) -> dict:
     spec = {"name": item_name(path, args.name), "text": text, "group": args.group}
     if args.suggest_map:
         spec["suggest_map"] = args.suggest_map
+    if args.suggestions:
+        spec["suggestions"] = read_json_file(args.suggestions)
     focus = read_json_file(args.focus)
     if focus is not None:
         spec["focus"] = focus
@@ -272,13 +274,27 @@ def cmd_items(args, home: Home) -> int:
 def cmd_new(args, home: Home) -> int:
     from .client import ServiceClient
     project, dataset = split_ref(args.ref)
-    modes = [m.strip() for m in (args.modes or "speakers,captions").split(",") if m.strip()]
-    if "speakers" in modes and not args.speakers:
+    config = read_json_file(args.config) if args.config else {}
+    if not isinstance(config, dict):
+        raise SystemExit("REFUSING: --config must contain a dataset configuration object")
+    if args.reveal:
+        if "reveal" in config and config["reveal"] != args.reveal:
+            raise SystemExit("REFUSING: --reveal and config.reveal disagree")
+        config["reveal"] = args.reveal
+    modes = ([m.strip() for m in args.modes.split(",") if m.strip()] if args.modes
+             else config.get("modes", ["speakers", "captions"]))
+    if not isinstance(modes, list) or not all(isinstance(m, str) for m in modes):
+        raise SystemExit("REFUSING: config.modes must be a list of mode names")
+    for field, explicit in (("speakers", parse_speakers(args.speakers) if args.speakers else None),
+                            ("modes", modes if args.modes else None), ("title", args.title)):
+        if explicit is not None and field in config and config[field] != explicit:
+            raise SystemExit(f"REFUSING: --{field} and config.{field} disagree")
+    if "speakers" in modes and not (args.speakers or config.get("speakers")):
         raise SystemExit("REFUSING: the speakers mode needs --speakers 'id=Label:key,...' (for example "
                          "--speakers 'jane=Jane Roe:1,sam=Sam Poe:2'); pass --modes captions to label captions only")
     body = {"project": project, "dataset": dataset, "repo": calling_repo(args), "create_project": args.create_project,
             "speakers": parse_speakers(args.speakers), "items": [item_spec(args)],
-            "owner_override": args.owner_override}
+            "owner_override": args.owner_override, "config": config}
     if args.modes:
         body["modes"] = modes
     if args.title:
@@ -286,6 +302,16 @@ def cmd_new(args, home: Home) -> int:
     res = ServiceClient(home).post("new", body)
     print(f"Send the owner this link (it works once, within 7 days):\n{res['url']}")
     print(json.dumps({k: v for k, v in res.items() if k != "url"}, ensure_ascii=False), file=sys.stderr)
+    return 0
+
+
+def cmd_suggestions(args, home: Home) -> int:
+    from .client import ServiceClient
+    project, dataset = split_ref(args.ref)
+    out(ServiceClient(home).post("suggestions", {
+        "project": project, "dataset": dataset, "repo": calling_repo(args), "key": args.item,
+        "suggestions": read_json_file(args.from_file), "expected_bundle_sha256": args.expected_bundle_sha256,
+        "owner_override": args.owner_override}))
     return 0
 
 
@@ -390,7 +416,9 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--from-file", required=True, help="the transcript file, read with your permissions")
         p.add_argument("--name", help="item name (default: the file name made safe)")
         p.add_argument("--group", default="item", help="item group; the key is GROUP/NAME (default: item)")
-        p.add_argument("--suggest-map", help="'Label=speaker_id,...': file labels become model suggestions")
+        suggestions = p.add_mutually_exclusive_group()
+        suggestions.add_argument("--suggest-map", help="'Label=speaker_id,...': imported source-tag suggestions")
+        suggestions.add_argument("--suggestions", help="a JSON file with a source-aligned contextual suggestion envelope")
         p.add_argument("--focus", help="a JSON file of focus passages")
 
     sub.add_parser("init", help="create $TL_HOME, its config and token").set_defaults(fn=cmd_init)
@@ -407,6 +435,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--speakers", help="'id=Label:key,...'")
     p.add_argument("--modes", help="comma-separated modes (default: speakers,captions)")
     p.add_argument("--title")
+    p.add_argument("--config", help="dataset configuration JSON, including review policy")
+    p.add_argument("--reveal", choices=("after_answer", "always"), help="when suggestions become visible")
     p.set_defaults(fn=cmd_new)
 
     p = sub.add_parser("project", help="create (git-private) or list projects")
@@ -435,6 +465,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--upsert", action="store_true", help="replace an item with the same key")
     p.set_defaults(fn=cmd_items)
 
+    p = sub.add_parser("suggestions", help="replace contextual suggestions without changing human reviews")
+    p.add_argument("action", choices=("set",))
+    p.add_argument("ref", metavar="PROJECT/DATASET")
+    p.add_argument("--item", required=True, help="existing GROUP/NAME item key")
+    p.add_argument("--from-file", required=True, help="JSON file with the contextual suggestion envelope")
+    p.add_argument("--expected-bundle-sha256", required=True,
+                   help="current suggestion_bundle_sha256 from GET /api/v1/item; a changed draft is refused")
+    writer(p)
+    p.set_defaults(fn=cmd_suggestions)
+
+    from .contextual_cli import register
+    register(sub)
+
     p = sub.add_parser("url", help="a one-time login link for the owner")
     p.add_argument("ref", metavar="PROJECT/DATASET")
     p.add_argument("--item")
@@ -454,7 +497,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("export", help="export labels")
     p.add_argument("ref", metavar="PROJECT/DATASET")
-    p.add_argument("kind", choices=("spans", "segments", "focus", "corrections", "labels", "notes", "all"))
+    p.add_argument("kind", choices=("spans", "segments", "focus", "corrections", "labels", "notes", "suggestions", "all"))
     p.add_argument("--out", help="a file, or - for stdout")
     p.add_argument("--no-text", action="store_true", help="drop every transcript word (safe to commit)")
     p.add_argument("--fill", choices=("suggestions",))

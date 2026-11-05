@@ -1,0 +1,77 @@
+direction: right
+label: "From original conversation to reviewed labels\nHow does source text become tentative speaker turns and then human-reviewed output?\nStart with original text and speaker identities. A caller-selected model proposes turns; deterministic code resolves exact words. A separate import attaches proposals. The person reviews the readable conversation, and exports retain the difference between suggestions and human decisions. Existing means implemented in this source, not deployed. The external adapter is an unverified caller dependency."
+n_source_preparation: "Prepare original speech\nProgram step - fixed rules | EXISTING\nParse source captions without changing text; build a prompt from original speech and supplied identities." {
+  shape: rectangle
+  style.fill: "#dbeafe"
+  style.stroke: "#2563eb"
+}
+n_adapter_runner: "Run one configured attempt\nProgram step - fixed rules | EXISTING\nLaunch caller-selected executable arguments without a shell; retain raw receipts and cache successful results." {
+  shape: rectangle
+  style.fill: "#dbeafe"
+  style.stroke: "#2563eb"
+}
+n_caller_model: "Caller model operation\nModel call - one bounded task | UNCERTAIN\nCaller supplies a bounded inference adapter that returns exact response text and identity evidence; provider execution and isolation are outside this package." {
+  shape: rectangle
+  style.fill: "#ede9fe"
+  style.stroke: "#7c3aed"
+}
+n_exact_resolver: "Resolve exact turn starts\nProgram step - fixed rules | EXISTING\nRequire unique exact anchors in marker windows and emit ordered speech-only ranges with hashes and model provenance." {
+  shape: rectangle
+  style.fill: "#dbeafe"
+  style.stroke: "#2563eb"
+}
+n_review_service: "Validate and save review data\nProgram step - fixed rules | EXISTING\nAccept validated tentative bundles and authenticated human edits through separate routes; enforce source identity and stale-write checks." {
+  shape: rectangle
+  style.fill: "#dbeafe"
+  style.stroke: "#2563eb"
+}
+n_review_page: "Read and correct the conversation\nClient application | EXISTING\nGroup displayed speech by speaker and attribution source while preserving original caption intervals and word anchors." {
+  shape: rectangle
+  style.fill: "#e0f2fe"
+  style.stroke: "#0284c7"
+}
+n_reviewer: "Person reviewing the transcript\nPerson | EXISTING\nConfirm or change speakers, mark uncertainty, and correct wording through the browser." {
+  shape: person
+  style.fill: "#f3f4f6"
+  style.stroke: "#4b5563"
+}
+n_export_builder: "Export labels with their origin\nProgram step - fixed rules | EXISTING\nExport human labels, correction overlays and tentative provenance separately; fill from suggestions only when explicitly requested." {
+  shape: rectangle
+  style.fill: "#dbeafe"
+  style.stroke: "#2563eb"
+}
+n_source_preparation -> n_adapter_runner: "Pass the prepared request | Prepared private request [inference-request]"
+n_adapter_runner -> n_caller_model: "Send prompt through stdin; await one adapter result | Adapter standard input [adapter-call]"
+n_caller_model -> n_adapter_runner: "Return exact response and identity evidence | Untrusted response with identity evidence [model-response]"
+n_adapter_runner -> n_exact_resolver: "Validate response against its prepared source | Prepared private request [inference-request], Untrusted response with identity evidence [model-response]"
+n_exact_resolver -> n_adapter_runner: "Return validated proposal ranges | Validated tentative suggestions [suggestion-bundle]"
+n_exact_resolver -> n_review_service: "Caller explicitly imports or replaces suggestions | Validated tentative suggestions [suggestion-bundle]"
+n_review_service -> n_review_page: "Serve the permitted reading and overlays | Browser reading and visible attribution [review-projection]"
+n_review_page -> n_reviewer: "Display grouped speech and original caption details | Browser reading and visible attribution [review-projection]"
+n_reviewer -> n_review_page: "Confirm speakers or correct wording | Explicit human speaker ranges [human-annotations], Human wording overlays [caption-corrections]"
+n_review_page -> n_review_service: "Save explicit human edits with source and version checks | Explicit human speaker ranges [human-annotations], Human wording overlays [caption-corrections]"
+n_review_service -> n_export_builder: "Request export kind, text policy and optional filling | Export selection [export-options]"
+n_export_builder -> n_review_service: "Return the provenance-preserving export | Portable review export [export-document]"
+legend: "Key - colors and shapes identify roles" {
+keyboundedllm: "Model call - one bounded task" {
+  shape: rectangle
+  style.fill: "#ede9fe"
+  style.stroke: "#7c3aed"
+}
+keyclient: "Client application" {
+  shape: rectangle
+  style.fill: "#e0f2fe"
+  style.stroke: "#0284c7"
+}
+keydeterministic: "Program step - fixed rules" {
+  shape: rectangle
+  style.fill: "#dbeafe"
+  style.stroke: "#2563eb"
+}
+keyhuman: "Person" {
+  shape: person
+  style.fill: "#f3f4f6"
+  style.stroke: "#4b5563"
+}
+keylines: "Solid arrow: synchronous call or data transfer. Dashed arrow: asynchronous, scheduled, or agent launch."
+}

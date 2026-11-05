@@ -1,0 +1,413 @@
+{
+  "view": "provenance",
+  "title": "Preserve source, model evidence and human edits — data examples and schemas",
+  "cards": [
+    {
+      "confidence": "verified",
+      "description": "Original text and immutable whitespace-token coordinates. Caption headers remain source metadata, not speaker labels.",
+      "evidence": [
+        {
+          "source": "src/transcript_labeling/items.py",
+          "symbol": "make_item"
+        },
+        {
+          "source": "src/transcript_labeling/formats.py",
+          "symbol": "parse"
+        },
+        {
+          "source": "src/transcript_labeling/tokens.py",
+          "symbol": "item_kinds"
+        }
+      ],
+      "example": "{\n  \"key\": \"calls/example\",\n  \"text\": \"00:00:00.000 --> 00:00:01.000\\nSpeaker 1: Hello Jane.\\n\\n00:00:01.000 --> 00:00:02.000\\nUnknown: Hi Sam.\\n\",\n  \"text_sha256\": \"f684b5358e9db40010384287b65324c7b0f9411bfa48c8d98704c5e9e6e89f89\",\n  \"token_count\": 13,\n  \"tokens\": [\n    \"00:00:00.000\",\n    \"-->\",\n    \"00:00:01.000\",\n    \"Speaker\",\n    \"1:\",\n    \"Hello\",\n    \"Jane.\",\n    \"00:00:01.000\",\n    \"-->\",\n    \"00:00:02.000\",\n    \"Unknown:\",\n    \"Hi\",\n    \"Sam.\"\n  ],\n  \"meta\": [\n    [\n      0,\n      5\n    ],\n    [\n      7,\n      11\n    ]\n  ],\n  \"segments\": [\n    {\n      \"label\": \"Speaker 1\",\n      \"t_start\": 0.0,\n      \"t_end\": 1.0,\n      \"header\": [\n        0,\n        5\n      ],\n      \"body\": [\n        5,\n        7\n      ]\n    },\n    {\n      \"label\": \"Unknown\",\n      \"t_start\": 1.0,\n      \"t_end\": 2.0,\n      \"header\": [\n        7,\n        11\n      ],\n      \"body\": [\n        11,\n        13\n      ]\n    }\n  ]\n}",
+      "fields": [
+        "key: recording identifier",
+        "text: exact original string",
+        "text_sha256: SHA-256 of UTF-8 text",
+        "token_count and tokens: matching whitespace tokens",
+        "meta: end-exclusive header ranges",
+        "segments: original label, header/body token ranges, t_start, nullable t_end"
+      ],
+      "format": "json",
+      "id": "source-item",
+      "lifecycle": "existing",
+      "name": "Original source and geometry",
+      "record": "entity",
+      "store": "dataset-files",
+      "uses": [
+        "Private dataset files -> Prepare original speech: Read an existing original item [read-original]",
+        "Private dataset files -> Validate and save review data: Read source, drafts and owner review state [read-dataset]",
+        "Private dataset files -> Export labels with their origin: Read original source, drafts and reviewed data [export-inputs]",
+        "Input to Prepare original speech [source-preparation]",
+        "Input to Private dataset files [dataset-files]",
+        "Output from Private dataset files [dataset-files]",
+        "Input to Export labels with their origin [export-builder]"
+      ],
+      "store_name": "Private dataset files"
+    },
+    {
+      "confidence": "verified",
+      "description": "All original speech with source-token markers, identity metadata and hashes. The complete request stays local; only its prompt crosses the adapter boundary.",
+      "evidence": [
+        {
+          "source": "src/transcript_labeling/contextual.py",
+          "symbol": "build_request"
+        },
+        {
+          "source": "src/transcript_labeling/contextual.py",
+          "symbol": "validate_request"
+        }
+      ],
+      "fields": [
+        "schema_version: 1",
+        "source: explicit original-text/token/meta allowlist",
+        "speakers: [{id,description}] and unclear: id",
+        "speech: [{index,text}]",
+        "marker_every: positive integer; default 20 speech words",
+        "anchor_words: positive integer; default 8 exact words",
+        "prompt, prompt_sha256, request_sha256: reproducible identity"
+      ],
+      "id": "inference-request",
+      "lifecycle": "existing",
+      "name": "Prepared private request",
+      "record": "entity",
+      "store": "run-artifacts",
+      "uses": [
+        "Prepare original speech -> Private inference artifacts: Write the private request [retain-request]",
+        "Private inference artifacts -> Resolve exact turn starts: Resolve retained response without a model call [offline-resolution]",
+        "Output from Prepare original speech [source-preparation]",
+        "Input to Resolve exact turn starts [exact-resolver]",
+        "Input to Private inference artifacts [run-artifacts]",
+        "Output from Private inference artifacts [run-artifacts]"
+      ],
+      "store_name": "Private inference artifacts"
+    },
+    {
+      "confidence": "verified",
+      "description": "Exact model response text plus selected-versus-served identity evidence. A CLI model argument alone proves selection only.",
+      "evidence": [
+        {
+          "source": "src/transcript_labeling/contextual.py",
+          "symbol": "resolve_response"
+        }
+      ],
+      "example": "{\n  \"response\": \"{\\\"turns\\\": [{\\\"marker\\\": 5, \\\"first_words\\\": \\\"Hello Jane. Hi Sam.\\\", \\\"speaker\\\": \\\"sam\\\"}, {\\\"marker\\\": 5, \\\"first_words\\\": \\\"Hi Sam.\\\", \\\"speaker\\\": \\\"jane\\\"}]}\",\n  \"requested_model\": \"chosen-model\",\n  \"served_model\": null,\n  \"model_identity\": \"unverified\"\n}",
+      "fields": [
+        "response: untouched JSON response string",
+        "requested_model: exact selected model",
+        "served_model: same model when reported; null when unverified",
+        "model_identity: reported or unverified",
+        "transport: optional caller evidence object"
+      ],
+      "format": "json",
+      "id": "model-response",
+      "lifecycle": "existing",
+      "name": "Untrusted response with identity evidence",
+      "record": "entity",
+      "store": "run-artifacts",
+      "uses": [
+        "Private inference artifacts -> Resolve exact turn starts: Resolve retained response without a model call [offline-resolution]",
+        "Input to Resolve exact turn starts [exact-resolver]",
+        "Input to Private inference artifacts [run-artifacts]",
+        "Output from Private inference artifacts [run-artifacts]"
+      ],
+      "store_name": "Private inference artifacts"
+    },
+    {
+      "confidence": "verified",
+      "description": "Source-pinned, ordered speech ranges and provenance. These are proposals, never owner actions.",
+      "evidence": [
+        {
+          "source": "src/transcript_labeling/contextual.py",
+          "symbol": "resolve_response"
+        },
+        {
+          "source": "src/transcript_labeling/suggestions.py",
+          "symbol": "validate_bundle"
+        }
+      ],
+      "example": "{\n  \"schema_version\": 1,\n  \"text_sha256\": \"f684b5358e9db40010384287b65324c7b0f9411bfa48c8d98704c5e9e6e89f89\",\n  \"token_count\": 13,\n  \"ranges\": [\n    {\n      \"start\": 5,\n      \"end\": 7,\n      \"speaker\": \"sam\",\n      \"source\": \"contextual_model\"\n    },\n    {\n      \"start\": 11,\n      \"end\": 13,\n      \"speaker\": \"jane\",\n      \"source\": \"contextual_model\"\n    }\n  ],\n  \"provenance\": {\n    \"method\": \"contextual_speaker_turns\",\n    \"requested_model\": \"chosen-model\",\n    \"served_model\": null,\n    \"model_identity\": \"unverified\",\n    \"prompt_sha256\": \"294111058b8958760831b8c4d75856b5fcda9b7a46aa2dff35abaff5eed16964\",\n    \"request_sha256\": \"aa2fca86540b36fd6a2ff7e54cecd4cb92055582669386a16fb56dbf4543032d\",\n    \"response_sha256\": \"d9bb6d56e532b693ac74fac26bb201ca9d5f1e9728d8c96135401ab39104e571\",\n    \"run_id\": \"synthetic-run\"\n  }\n}",
+      "fields": [
+        "schema_version: 1",
+        "text_sha256 and token_count: original source identity",
+        "ranges: [{start,end,speaker,source:contextual_model}]",
+        "provenance: method, requested_model, served_model, model_identity, prompt_sha256, request_sha256, response_sha256, run_id; optional transport"
+      ],
+      "format": "json",
+      "id": "suggestion-bundle",
+      "lifecycle": "existing",
+      "name": "Validated tentative suggestions",
+      "record": "entity",
+      "store": "run-artifacts",
+      "uses": [
+        "Resolve exact turn starts -> Private inference artifacts: Write the resolved private bundle [retain-offline-bundle]",
+        "Resolve exact turn starts -> Validate and save review data: Caller explicitly imports or replaces suggestions [attach-bundle]",
+        "Output from Resolve exact turn starts [exact-resolver]",
+        "Input to Validate and save review data [review-service]",
+        "Input to Private inference artifacts [run-artifacts]",
+        "Output from Private inference artifacts [run-artifacts]"
+      ],
+      "store_name": "Private inference artifacts"
+    },
+    {
+      "confidence": "verified",
+      "description": "Draft history retains older proposals and their model provenance. It can resolve recorded confirmation hashes but cannot reconstruct missing or merely annotation-level historical links.",
+      "evidence": [
+        {
+          "source": "src/transcript_labeling/suggestions.py",
+          "symbol": "apply_bundle"
+        },
+        {
+          "source": "src/transcript_labeling/suggestions.py",
+          "symbol": "suggestion_bundle_hash"
+        },
+        {
+          "source": "src/transcript_labeling/formats.py",
+          "symbol": "segment_suggestions"
+        }
+      ],
+      "fields": [
+        "suggestions: contextual or imported source-label ranges",
+        "suggestions_sha256: digest of ranges",
+        "suggestion_provenance: contextual request/model evidence when present",
+        "suggestion_history: prior ranges, digest and provenance",
+        "suggestion_bundle_sha256: response digest of current ranges plus provenance for guarded updates"
+      ],
+      "id": "item-drafts",
+      "lifecycle": "existing",
+      "name": "Current and previous draft bundles",
+      "record": "entity",
+      "store": "dataset-files",
+      "uses": [
+        "Private dataset files -> Validate and save review data: Read source, drafts and owner review state [read-dataset]",
+        "Validate and save review data -> Private dataset files: Replace draft fields under source and bundle guards [save-drafts]",
+        "Private dataset files -> Export labels with their origin: Read original source, drafts and reviewed data [export-inputs]",
+        "Output from Validate and save review data [review-service]",
+        "Input to Private dataset files [dataset-files]",
+        "Output from Private dataset files [dataset-files]",
+        "Input to Export labels with their origin [export-builder]"
+      ],
+      "store_name": "Private dataset files"
+    },
+    {
+      "confidence": "verified",
+      "description": "Source tokens, current draft visibility and human overlays drive the reading. History is excluded and blind suggestions are omitted server-side.",
+      "evidence": [
+        {
+          "source": "src/transcript_labeling/service.py",
+          "symbol": "transcript_view"
+        },
+        {
+          "source": "src/transcript_labeling/page/span_editor.js",
+          "symbol": "statesFor"
+        },
+        {
+          "source": "src/transcript_labeling/page/span_editor.js",
+          "symbol": "conversationMarkup"
+        }
+      ],
+      "fields": [
+        "source token indices and token_kinds",
+        "current visible suggestions; suggestions_hidden count otherwise",
+        "original caption intervals and labels",
+        "human ranges and correction overlays loaded separately",
+        "reveal: always or after_answer; saved reveal events are owner actions"
+      ],
+      "id": "review-projection",
+      "lifecycle": "existing",
+      "name": "Browser reading and visible attribution",
+      "record": "entity",
+      "uses": [
+        "Validate and save review data -> Read and correct the conversation: Serve the permitted reading and overlays [show-review]",
+        "Output from Validate and save review data [review-service]",
+        "Input to Read and correct the conversation [review-page]"
+      ]
+    },
+    {
+      "confidence": "verified",
+      "description": "New confirmations retain exact range-level draft hashes. Legacy annotation-level evidence is marked separately; missing historical links remain absent and cannot be reconstructed from draft history.",
+      "evidence": [
+        {
+          "source": "src/transcript_labeling/spans.py",
+          "symbol": "validate_annotation"
+        },
+        {
+          "source": "src/transcript_labeling/service.py",
+          "symbol": "post_answer"
+        },
+        {
+          "source": "src/transcript_labeling/page/span_editor.js",
+          "symbol": "saveRanges"
+        }
+      ],
+      "example": "{\n  \"key\": \"calls/example\",\n  \"text_sha256\": \"f684b5358e9db40010384287b65324c7b0f9411bfa48c8d98704c5e9e6e89f89\",\n  \"token_count\": 13,\n  \"ranges\": [\n    {\n      \"start\": 5,\n      \"end\": 7,\n      \"speaker\": \"sam\",\n      \"origin\": \"model_confirmed\",\n      \"suggestion_evidence_scope\": \"legacy_annotation\"\n    },\n    {\n      \"start\": 11,\n      \"end\": 13,\n      \"speaker\": \"jane\",\n      \"origin\": \"model_confirmed\",\n      \"suggestions_sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n      \"suggestion_bundle_sha256\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n      \"suggestion_evidence_scope\": \"range\"\n    }\n  ],\n  \"checked_by\": \"synthetic reviewer\",\n  \"suggestions_sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n  \"suggestion_bundle_sha256\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"\n}",
+      "fields": [
+        "key, text_sha256, token_count: matching source identity",
+        "ranges: ordered non-overlapping {start,end,speaker,origin}",
+        "origin: human, model_confirmed, or suggestion_confirmed; historical model_confirmed may refer to imported tags",
+        "range suggestions_sha256: optional digest of proposed ranges seen at confirmation",
+        "range suggestion_bundle_sha256: optional digest including model provenance",
+        "range suggestion_evidence_scope: range for new confirmations; legacy_annotation for historical annotation-level evidence",
+        "Missing legacy hashes remain absent across later saves; no current bundle is attached retroactively",
+        "checked_by: assigned by server",
+        "top-level suggestions_sha256 and suggestion_bundle_sha256: current annotation-save context, not a substitute for per-range provenance",
+        "answers version: browser stale-write guard"
+      ],
+      "format": "json",
+      "id": "human-annotations",
+      "lifecycle": "existing",
+      "name": "Explicit human speaker ranges",
+      "record": "entity",
+      "store": "dataset-files",
+      "uses": [
+        "Private dataset files -> Validate and save review data: Read source, drafts and owner review state [read-dataset]",
+        "Read and correct the conversation -> Validate and save review data: Save explicit human edits with source and version checks [submit-review]",
+        "Validate and save review data -> Private dataset files: Write human answers and correction history separately [save-human]",
+        "Private dataset files -> Export labels with their origin: Read original source, drafts and reviewed data [export-inputs]",
+        "Input to Validate and save review data [review-service]",
+        "Input to Private dataset files [dataset-files]",
+        "Output from Private dataset files [dataset-files]",
+        "Output from Read and correct the conversation [review-page]",
+        "Input to Export labels with their origin [export-builder]"
+      ],
+      "store_name": "Private dataset files"
+    },
+    {
+      "confidence": "verified",
+      "description": "Replacement wording is anchored to original speech tokens. Saving adds a revision and history without changing the source or renumbering speaker ranges.",
+      "evidence": [
+        {
+          "source": "src/transcript_labeling/corrections.py",
+          "symbol": "update_corrections"
+        },
+        {
+          "source": "src/transcript_labeling/page/corrections.js",
+          "symbol": "persistCorrections"
+        }
+      ],
+      "fields": [
+        "key, text_sha256, token_count: source identity",
+        "edits: [{start,end,original,replacement}]",
+        "revision: checked against prior saved value",
+        "checked_by and updated_at: server-owned",
+        "history: previous and next edits per saved revision"
+      ],
+      "id": "caption-corrections",
+      "lifecycle": "existing",
+      "name": "Human wording overlays",
+      "record": "entity",
+      "store": "dataset-files",
+      "uses": [
+        "Private dataset files -> Validate and save review data: Read source, drafts and owner review state [read-dataset]",
+        "Read and correct the conversation -> Validate and save review data: Save explicit human edits with source and version checks [submit-review]",
+        "Validate and save review data -> Private dataset files: Write human answers and correction history separately [save-human]",
+        "Private dataset files -> Export labels with their origin: Read original source, drafts and reviewed data [export-inputs]",
+        "Input to Validate and save review data [review-service]",
+        "Input to Private dataset files [dataset-files]",
+        "Output from Private dataset files [dataset-files]",
+        "Output from Read and correct the conversation [review-page]",
+        "Input to Export labels with their origin [export-builder]"
+      ],
+      "store_name": "Private dataset files"
+    },
+    {
+      "confidence": "verified",
+      "description": "Raw outputs survive adapter failure. A completion marker is written only after the response resolves successfully.",
+      "evidence": [
+        {
+          "source": "src/transcript_labeling/contextual_cli.py",
+          "symbol": "run_adapter"
+        }
+      ],
+      "fields": [
+        "identity: request_sha256, explicit model, adapter argv",
+        "attempt record: attempt, exit_code, error category/message, stdout and stderr paths",
+        "success marker: identity and raw_response path",
+        "status: attempted, succeeded, failed, cached, errors",
+        "status: running, succeeded or failed; raw filenames reserve attempt numbers even after interruption"
+      ],
+      "id": "attempt-record",
+      "lifecycle": "existing",
+      "name": "Attempt or cache receipt",
+      "record": "entity",
+      "store": "run-artifacts",
+      "uses": [
+        "Input to Private inference artifacts [run-artifacts]"
+      ],
+      "store_name": "Private inference artifacts"
+    },
+    {
+      "confidence": "verified",
+      "description": "Exports distinguish human decisions from optional tentative filling, preserving per-range evidence hashes and whether that evidence is range-level or only legacy annotation-level.",
+      "evidence": [
+        {
+          "source": "src/transcript_labeling/export3.py",
+          "symbol": "export_dataset"
+        },
+        {
+          "source": "src/transcript_labeling/export3.py",
+          "symbol": "_suggestions"
+        },
+        {
+          "source": "src/transcript_labeling/export3.py",
+          "symbol": "_segments"
+        },
+        {
+          "source": "src/transcript_labeling/export3.py",
+          "symbol": "_no_text"
+        }
+      ],
+      "fields": [
+        "schema_version: 1; tool, project, dataset, kind, no_text",
+        "data or named export kinds for all",
+        "suggestions export: current bundle and history",
+        "segment pieces: source offsets, speaker, origin; optional suggestion_source and suggestions_sha256",
+        "no_text: removes transcript and free-form provenance",
+        "confirmed range/piece: optional suggestions_sha256 and suggestion_bundle_sha256",
+        "suggestion_evidence_scope: range or legacy_annotation; missing history is not inferred",
+        "Adjacent human pieces with different evidence remain separate"
+      ],
+      "id": "export-document",
+      "lifecycle": "existing",
+      "name": "Portable review export",
+      "record": "entity",
+      "uses": [
+        "Export labels with their origin -> Validate and save review data: Return the provenance-preserving export [return-export]",
+        "Output from Export labels with their origin [export-builder]"
+      ]
+    },
+    {
+      "confidence": "verified",
+      "description": "Caller selects export kind, text omission, and optional suggestion filling.",
+      "evidence": [
+        {
+          "source": "src/transcript_labeling/export3.py",
+          "symbol": "agent_export"
+        },
+        {
+          "source": "src/transcript_labeling/export3.py",
+          "symbol": "export_dataset"
+        }
+      ],
+      "example": "{\"kind\":\"all\",\"no_text\":true}",
+      "fields": [
+        "kind: spans, segments, focus, corrections, labels, notes, suggestions, or all",
+        "no_text: boolean",
+        "fill: absent or suggestions"
+      ],
+      "format": "json",
+      "id": "export-options",
+      "lifecycle": "existing",
+      "name": "Export selection",
+      "record": "entity",
+      "uses": [
+        "Validate and save review data -> Export labels with their origin: Request export kind, text policy and optional filling [request-export]"
+      ]
+    }
+  ],
+  "missing_stores": [],
+  "store_names": {
+    "dataset-files": "Private dataset files",
+    "run-artifacts": "Private inference artifacts"
+  }
+}

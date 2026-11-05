@@ -17,6 +17,9 @@ offsets into the item. What changes per format is which tokens are speech:
               token kind): shown, never labelled.
   bracket-ts  verbatim-index captions: `[hh:mm:ss]` marks and `>>` turn marks inside
               running text, which the token kinds already treat as non-speech.
+  bracket-speakers  One `[hh:mm:ss.sss] Label: words` caption per line. Fractional
+              seconds are optional. These sources supply starts only, so end
+              times remain null. The next caption is not an invented end time.
   plain       anything else: every word is speech.
 
 Detection is automatic and strict. A file with full-line clock times is parsed as
@@ -29,10 +32,11 @@ import re
 
 from .timing import clock_seconds
 
-FORMATS = ("zoom-notes", "bracket-ts", "plain")
-TIMING = re.compile(r"\s*(\d{2}):(\d{2}):(\d{2})(?:[.,]\d+)?\s*-->\s*(\d{2}):(\d{2}):(\d{2})(?:[.,]\d+)?\s*")
+FORMATS = ("zoom-notes", "bracket-speakers", "bracket-ts", "plain")
+TIMING = re.compile(r"\s*(\d{2}):(\d{2}):(\d{2}(?:[.,]\d+)?)\s*-->\s*(\d{2}):(\d{2}):(\d{2}(?:[.,]\d+)?)\s*")
 LABEL = re.compile(r"([^:\n]{1,60}?):(?=\s|$)")
-MARK = re.compile(r"\[\d{2}:\d{2}:\d{2}\]")
+MARK = re.compile(r"\[\d{2}:\d{2}:\d{2}(?:\.\d+)?\]")
+BRACKET_CAPTION = re.compile(r"\s*\[(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)\]\s+([^:\n]{1,60}?):(?=\s|$)\s*")
 #: The longest label read as a speaker label rather than speech, in words.
 LABEL_MAX_WORDS = 5
 
@@ -51,6 +55,8 @@ def detect(text: str) -> str:
     _refuse_unsupported(text, lines)
     if any(TIMING.fullmatch(line.lstrip("\ufeff")) for line in lines):
         return "zoom-notes"
+    if any(BRACKET_CAPTION.match(line) for line in lines):
+        return "bracket-speakers"
     if MARK.search(text):
         return "bracket-ts"
     return "plain"
@@ -62,9 +68,41 @@ def parse(text: str, fmt: str | None = None) -> dict:
         raise SystemExit(f"REFUSING: format {fmt!r} must be one of {FORMATS}")
     _refuse_unsupported(text, text.splitlines())
     fmt = fmt or detect(text)
+    if fmt == "bracket-speakers":
+        return _bracket_speakers(text)
     if fmt != "zoom-notes":
         return {"format": fmt, "segments": None, "meta": [], "labels": []}
     return _zoom_notes(text)
+
+
+def _bracket_speakers(text: str) -> dict:
+    """Preserve line-based speaker captions without fabricating source end times."""
+    from bisect import bisect_left
+    starts = [m.start() for m in re.finditer(r"\S+", text)]
+    offset, segments, meta, labels = 0, [], [], {}
+    for number, line in enumerate(text.splitlines(keepends=True), 1):
+        if not line.strip():
+            offset += len(line)
+            continue
+        match = BRACKET_CAPTION.match(line)
+        if not match or len(match[4].split()) > LABEL_MAX_WORDS:
+            raise SystemExit(f"REFUSING: bracket-speakers line {number} needs `[HH:MM:SS.sss] Label: words`")
+        h, m, s = int(match[1]), int(match[2]), float(match[3])
+        if m >= 60 or s >= 60:
+            raise SystemExit(f"REFUSING: bracket-speakers line {number} has an invalid clock time")
+        a, b, end = (bisect_left(starts, p) for p in (offset, offset + match.end(), offset + len(line)))
+        label = match[4].strip()
+        if not label or b == end:
+            raise SystemExit(f"REFUSING: bracket-speakers line {number} needs a label and speech")
+        meta.append([a, b])
+        segments.append({"label": label, "t_start": clock_seconds(*match.groups()[:3]), "t_end": None,
+                         "header": [a, b], "body": [b, end]})
+        labels[label] = labels.get(label, 0) + 1
+        offset += len(line)
+    if not segments:
+        raise SystemExit("REFUSING: bracket-speakers has no captions")
+    return {"format": "bracket-speakers", "segments": segments, "meta": meta,
+            "labels": sorted(labels, key=lambda k: (-labels[k], k))}
 
 
 def _label(line: str) -> tuple[str, int] | None:

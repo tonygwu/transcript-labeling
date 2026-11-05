@@ -1,0 +1,65 @@
+flowchart TB
+  subgraph viewFrame["Preserve source, model evidence and human edits"]
+  direction TB
+  viewGuide["Which records change, and which evidence survives a new suggestion or wording correction?
+Original text fixes token coordinates. Private inference artifacts retain the prompt and raw response for offline resolution. A guarded item update replaces only tentative fields and saves draft history. Human labels and wording overlays stay separate. Exports expose each origin and the source hashes; no suggestion becomes human truth automatically. New confirmed ranges retain their own draft and bundle hashes. Legacy annotation evidence is marked separately, and absent historical links remain absent after later saves."]
+  style viewGuide fill:#ffffff,stroke:#9ca3af,color:#111827
+  n736f757263652d7072657061726174696f6e["Prepare original speech
+Program step - fixed rules | EXISTING
+Parse source captions without changing text; build a prompt from original speech and supplied identities."]
+  n65786163742d7265736f6c766572["Resolve exact turn starts
+Program step - fixed rules | EXISTING
+Require unique exact anchors in marker windows and emit ordered speech-only ranges with hashes and model provenance."]
+  n7265766965772d73657276696365["Validate and save review data
+Program step - fixed rules | EXISTING
+Accept validated tentative bundles and authenticated human edits through separate routes; enforce source identity and stale-write checks."]
+  n646174617365742d66696c6573[("Private dataset files
+Saved data | EXISTING | [dataset-files]
+Keep original items, tentative draft history, human answers, corrections and review events in separate private JSON files.")]
+  n7265766965772d70616765["Read and correct the conversation
+Client application | EXISTING
+Group displayed speech by speaker and attribution source while preserving original caption intervals and word anchors."]
+  n6578706f72742d6275696c646572["Export labels with their origin
+Program step - fixed rules | EXISTING
+Export human labels, correction overlays and tentative provenance separately; fill from suggestions only when explicitly requested."]
+  n72756e2d617274696661637473[("Private inference artifacts
+Saved data | EXISTING | [run-artifacts]
+Retain prepared requests, raw adapter stdout and stderr, attempt records, derived bundles and success markers outside Git.")]
+  n646174617365742d66696c6573 -->|"Read an existing original item | Original source and geometry [source-item]"| n736f757263652d7072657061726174696f6e
+  n736f757263652d7072657061726174696f6e -->|"Write the private request | Prepared private request [inference-request]"| n72756e2d617274696661637473
+  n72756e2d617274696661637473 -->|"Resolve retained response without a model call | Prepared private request [inference-request], Untrusted response with identity evidence [model-response]"| n65786163742d7265736f6c766572
+  n65786163742d7265736f6c766572 -->|"Write the resolved private bundle | Validated tentative suggestions [suggestion-bundle]"| n72756e2d617274696661637473
+  n65786163742d7265736f6c766572 -->|"Caller explicitly imports or replaces suggestions | Validated tentative suggestions [suggestion-bundle]"| n7265766965772d73657276696365
+  n646174617365742d66696c6573 -->|"Read source, drafts and owner review state | Original source and geometry [source-item], Current and previous draft bundles [item-drafts], Explicit human speaker ranges [human-annotations], Human wording overlays [caption-corrections]"| n7265766965772d73657276696365
+  n7265766965772d73657276696365 -->|"Replace draft fields under source and bundle guards | Current and previous draft bundles [item-drafts]"| n646174617365742d66696c6573
+  n7265766965772d73657276696365 -->|"Serve the permitted reading and overlays | Browser reading and visible attribution [review-projection]"| n7265766965772d70616765
+  n7265766965772d70616765 -->|"Save explicit human edits with source and version checks | Explicit human speaker ranges [human-annotations], Human wording overlays [caption-corrections]"| n7265766965772d73657276696365
+  n7265766965772d73657276696365 -->|"Write human answers and correction history separately | Explicit human speaker ranges [human-annotations], Human wording overlays [caption-corrections]"| n646174617365742d66696c6573
+  n7265766965772d73657276696365 -->|"Request export kind, text policy and optional filling | Export selection [export-options]"| n6578706f72742d6275696c646572
+  n646174617365742d66696c6573 -->|"Read original source, drafts and reviewed data | Original source and geometry [source-item], Current and previous draft bundles [item-drafts], Explicit human speaker ranges [human-annotations], Human wording overlays [caption-corrections]"| n6578706f72742d6275696c646572
+  n6578706f72742d6275696c646572 -->|"Return the provenance-preserving export | Portable review export [export-document]"| n7265766965772d73657276696365
+  end
+  style viewFrame fill:#ffffff,stroke:#cbd5e1
+  classDef client fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#111827
+  classDef datastore fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#111827
+  classDef deterministic fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#111827
+  class n736f757263652d7072657061726174696f6e deterministic
+  class n65786163742d7265736f6c766572 deterministic
+  class n7265766965772d73657276696365 deterministic
+  class n646174617365742d66696c6573 datastore
+  class n7265766965772d70616765 client
+  class n6578706f72742d6275696c646572 deterministic
+  class n72756e2d617274696661637473 datastore
+  subgraph legend["Key"]
+    keyclient["Client application"]
+    class keyclient client
+    keydatastore[("Saved data")]
+    class keydatastore datastore
+    keydeterministic["Program step - fixed rules"]
+    class keydeterministic deterministic
+    keylines["Solid arrow: synchronous call or data transfer. Dotted arrow: asynchronous, scheduled, or agent launch."]
+    keystatus["Status words describe implementation: EXISTING. Color describes role, not status."]
+  end
+  style legend fill:#ffffff,stroke:#cbd5e1
+  style keylines fill:#ffffff,stroke:#9ca3af,color:#111827
+  style keystatus fill:#ffffff,stroke:#9ca3af,color:#111827

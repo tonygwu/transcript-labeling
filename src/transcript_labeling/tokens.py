@@ -39,7 +39,7 @@ def item_kinds(item: dict) -> list[str]:
 def _pattern_kinds(tokens: list[str]) -> list[str]:
     kinds = []
     for word in tokens:
-        if re.fullmatch(r"\[\d{2}:\d{2}:\d{2}\]", word):
+        if re.fullmatch(r"\[\d{2}:\d{2}:\d{2}(?:\.\d+)?\]", word):
             kind = "timestamp"
         elif re.fullmatch(r">{2,}", word):
             kind = "turn"

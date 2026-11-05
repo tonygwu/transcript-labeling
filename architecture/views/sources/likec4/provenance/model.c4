@@ -1,0 +1,100 @@
+specification {
+  element deterministic { style { shape rectangle color blue } }
+  element bounded_llm { style { shape rectangle color indigo } }
+  element agent { style { shape rectangle color red } }
+  element human { style { shape person color gray } }
+  element client { style { shape browser color blue } }
+  element external { style { shape rectangle color amber } }
+  element datastore { style { shape storage color green } }
+  element queue { style { shape queue color amber } }
+  element scheduler { style { shape rectangle color amber } }
+  element worker { style { shape rectangle color blue } }
+  relationship sync { line solid }
+  relationship async { line dotted }
+}
+model {
+  source_preparation = deterministic 'Prepare original speech' 'Parse source captions without changing text; build a prompt from original speech and supplied identities.' {
+    metadata {
+      lifecycle 'existing'
+      confidence 'verified'
+      source 'src/transcript_labeling/formats.py'
+      source 'src/transcript_labeling/contextual.py'
+      source 'src/transcript_labeling/mcp.py'
+    }
+  }
+  exact_resolver = deterministic 'Resolve exact turn starts' 'Require unique exact anchors in marker windows and emit ordered speech-only ranges with hashes and model provenance.' {
+    metadata {
+      lifecycle 'existing'
+      confidence 'verified'
+      source 'src/transcript_labeling/contextual.py'
+      source 'src/transcript_labeling/contextual.py'
+    }
+  }
+  review_service = deterministic 'Validate and save review data' 'Accept validated tentative bundles and authenticated human edits through separate routes; enforce source identity and stale-write checks.' {
+    metadata {
+      lifecycle 'existing'
+      confidence 'verified'
+      source 'src/transcript_labeling/suggestions.py'
+      source 'src/transcript_labeling/agent_api.py'
+      source 'src/transcript_labeling/service.py'
+      source 'src/transcript_labeling/service.py'
+    }
+  }
+  dataset_files = datastore 'Private dataset files' 'Keep original items, tentative draft history, human answers, corrections and review events in separate private JSON files.' {
+    metadata {
+      lifecycle 'existing'
+      confidence 'verified'
+      source 'src/transcript_labeling/dataset3.py'
+      source 'src/transcript_labeling/store.py'
+      source 'src/transcript_labeling/store.py'
+      source 'src/transcript_labeling/suggestions.py'
+    }
+  }
+  review_page = client 'Read and correct the conversation' 'Group displayed speech by speaker and attribution source while preserving original caption intervals and word anchors.' {
+    metadata {
+      lifecycle 'existing'
+      confidence 'verified'
+      source 'src/transcript_labeling/page/span_editor.js'
+      source 'src/transcript_labeling/page/span_editor.js'
+      source 'src/transcript_labeling/page/corrections.js'
+    }
+  }
+  export_builder = deterministic 'Export labels with their origin' 'Export human labels, correction overlays and tentative provenance separately; fill from suggestions only when explicitly requested.' {
+    metadata {
+      lifecycle 'existing'
+      confidence 'verified'
+      source 'src/transcript_labeling/export3.py'
+      source 'src/transcript_labeling/export3.py'
+      source 'src/transcript_labeling/export3.py'
+    }
+  }
+  run_artifacts = datastore 'Private inference artifacts' 'Retain prepared requests, raw adapter stdout and stderr, attempt records, derived bundles and success markers outside Git.' {
+    metadata {
+      lifecycle 'existing'
+      confidence 'verified'
+      source 'src/transcript_labeling/contextual_cli.py'
+      source 'src/transcript_labeling/contextual_cli.py'
+      source 'src/transcript_labeling/textguard.py'
+    }
+  }
+  dataset_files -[sync]-> source_preparation 'Read an existing original item | Original source and geometry [source-item]'
+  source_preparation -[sync]-> run_artifacts 'Write the private request | Prepared private request [inference-request]'
+  run_artifacts -[sync]-> exact_resolver 'Resolve retained response without a model call | Prepared private request [inference-request], Untrusted response with identity evidence [model-response]'
+  exact_resolver -[sync]-> run_artifacts 'Write the resolved private bundle | Validated tentative suggestions [suggestion-bundle]'
+  exact_resolver -[sync]-> review_service 'Caller explicitly imports or replaces suggestions | Validated tentative suggestions [suggestion-bundle]'
+  dataset_files -[sync]-> review_service 'Read source, drafts and owner review state | Original source and geometry [source-item], Current and previous draft bundles [item-drafts], Explicit human speaker ranges [human-annotations], Human wording overlays [caption-corrections]'
+  review_service -[sync]-> dataset_files 'Replace draft fields under source and bundle guards | Current and previous draft bundles [item-drafts]'
+  review_service -[sync]-> review_page 'Serve the permitted reading and overlays | Browser reading and visible attribution [review-projection]'
+  review_page -[sync]-> review_service 'Save explicit human edits with source and version checks | Explicit human speaker ranges [human-annotations], Human wording overlays [caption-corrections]'
+  review_service -[sync]-> dataset_files 'Write human answers and correction history separately | Explicit human speaker ranges [human-annotations], Human wording overlays [caption-corrections]'
+  review_service -[sync]-> export_builder 'Request export kind, text policy and optional filling | Export selection [export-options]'
+  dataset_files -[sync]-> export_builder 'Read original source, drafts and reviewed data | Original source and geometry [source-item], Current and previous draft bundles [item-drafts], Explicit human speaker ranges [human-annotations], Human wording overlays [caption-corrections]'
+  export_builder -[sync]-> review_service 'Return the provenance-preserving export | Portable review export [export-document]'
+}
+views {
+  view provenance {
+    title 'Preserve source, model evidence and human edits'
+    include *
+    autoLayout TopBottom
+  }
+}

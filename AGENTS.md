@@ -46,6 +46,11 @@ how the page looks, run it and commit the new picture with the change.
 
 ## Runtime rules
 
+- Shared contextual speaker inference: `tl contextual prepare|run|resolve`.
+  See `docs/CONTEXTUAL.md` for the source-alignment, private adapter and migration
+  contracts. Use `tl suggestions set` to update proposals without replacing
+  human state; never put its requests or responses in this public checkout.
+
 - **Standard library only at runtime.** `dependencies = []` in `pyproject.toml`
   is checked by `tests/test_package.py`. Test-only tools go in the `dev` dependency group.
 - Python 3.12 or newer.

@@ -105,6 +105,80 @@ def versions(c):
     return answers["versions"]
 
 
+def contextual_bundle(text="Hello there. Yes hello.", ranges=None):
+    from transcript_labeling.tokens import text_hash, tokenize
+    return {"schema_version": 1, "text_sha256": text_hash(text), "token_count": len(tokenize(text)),
+            "ranges": ranges if ranges is not None else [
+                {"start": 0, "end": 2, "speaker": "ann", "source": "contextual_model"},
+                {"start": 2, "end": 4, "speaker": "bo", "source": "contextual_model"}],
+            "provenance": {"method": "contextual_speaker_turns", "requested_model": "example-model",
+                           "served_model": None, "model_identity": "unverified", "prompt_sha256": "a" * 64,
+                           "request_sha256": "b" * 64, "response_sha256": "c" * 64, "run_id": "synthetic-run"}}
+
+
+def test_contextual_import_and_item_read_are_source_aligned(tmp_path):
+    with running(tmp_path) as c:
+        bundle = contextual_bundle()
+        status, made = new_dataset(c, config={"reveal": "always"}, items=[{
+            "name": "one", "text": "Hello there. Yes hello.", "suggestions": bundle}])
+        assert status == 200, made
+        status, response = c.json("GET", "/api/v1/item?project=demo&dataset=call-1&key=item/one", bearer=True)
+        assert status == 200, response
+        item = response["item"]
+        assert response["config"]["reveal"] == "always"
+        assert item["suggestions"] == bundle["ranges"]
+        assert item["suggestion_provenance"] == bundle["provenance"]
+        assert "suggestion_history" not in item
+        assert c.json("GET", "/api/v1/item?project=demo&dataset=call-1&key=item/one")[0] == 401
+
+
+def test_contextual_update_preserves_human_state_and_retry_is_idempotent(svc_client):
+    from transcript_labeling.suggestions import suggestion_bundle_hash
+    c = svc_client
+    login(c, c.url)
+    ds = c.svc.dataset("demo", "call-1")
+    old = ds.item("call/one")
+    start, end = old["segments"][0]["body"]
+    v = versions(c)
+    common = {"key": "call/one", "text_sha256": old["text_sha256"], "token_count": old["token_count"]}
+    value = {**common, "ranges": [{"start": start, "end": end, "speaker": "ann", "origin": "human"}]}
+    assert c.json("POST", "/p/demo/call-1/api/answer", {
+        "kind": "spans", "id": "call/one", "value": value, "versions": v})[0] == 200
+    assert c.json("POST", "/p/demo/call-1/api/answer", {
+        "kind": "corrections", "id": "call/one", "versions": v,
+        "value": {**common, "revision": 0, "edits": [{"start": start, "end": start + 1,
+                 "original": old["tokens"][start], "replacement": "Greetings,"}]}})[0] == 200
+    assert c.json("POST", "/p/demo/call-1/api/reveal", {"key": "call/one", "versions": v})[0] == 200
+    assert c.json("POST", "/p/demo/call-1/api/note", {
+        "id": "call:one:20", "text": "Check who agreed", "versions": v})[0] == 200
+    assert c.json("POST", "/p/demo/call-1/api/done", {"key": "call/one", "done": True, "versions": v})[0] == 200
+    events_before = c.svc.events("demo", "call-1").read()
+    # Preserve the owner files exactly, including notes, reveals, captions and answers.
+    before = {p: p.read_bytes() if p.exists() else None for p in
+              (ds.answers, ds.review_path, ds.file("catalog"), ds.root / "manifest.json")}
+    ranges = [{"start": old["segments"][0]["body"][0], "end": old["segments"][0]["body"][1],
+               "speaker": "bo", "source": "contextual_model"}]
+    bundle = contextual_bundle(ZOOM, ranges)
+    body = {"project": "demo", "dataset": "call-1", "repo": "me/repo", "key": "call/one",
+            "suggestions": bundle, "expected_bundle_sha256": suggestion_bundle_hash(old)}
+    status, result = c.json("POST", "/api/v1/suggestions", body, bearer=True)
+    assert status == 200 and result["changed"] is True, result
+    updated = ds.item("call/one")
+    assert updated["suggestions"] == ranges
+    assert updated["suggestion_history"][0]["suggestions"] == old["suggestions"]
+    assert updated["suggestion_history"][0]["suggestions_sha256"] == old["suggestions_sha256"]
+    raw = ds.item_path("call/one").read_bytes()
+    status, result = c.json("POST", "/api/v1/suggestions", body, bearer=True)
+    assert status == 200 and result["changed"] is False, result
+    assert ds.item_path("call/one").read_bytes() == raw
+    for path, data in before.items():
+        assert (path.read_bytes() if path.exists() else None) == data
+    assert c.svc.events("demo", "call-1").read() == events_before
+    bundle["ranges"][0]["speaker"] = "ann"
+    status, result = c.json("POST", "/api/v1/suggestions", body, bearer=True)
+    assert status == 409 and "suggestions changed" in result["error"], result
+
+
 @pytest.fixture
 def svc_client(tmp_path):
     with running(tmp_path) as c:
