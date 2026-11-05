@@ -44,6 +44,8 @@ the whole conversation using a caller-selected model. It validates exact source
 word ranges and records model provenance separately from imported speaker tags
 and human confirmations. Conversation view groups fragments for reading while
 keeping every original caption and timestamp available.
+Click **Accept** beside a suggested speaker block to confirm that block's words.
+Your other markings stay as they are, and **Undo marking** reverses the acceptance.
 
 ## How it works
 

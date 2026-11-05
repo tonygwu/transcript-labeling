@@ -41,6 +41,7 @@ from transcript_labeling.export3 import export_dataset
 from transcript_labeling.home import Home
 from transcript_labeling.items import add_items, make_item
 from transcript_labeling.service import Service, build_service_server
+from transcript_labeling.suggestions import suggestion_bundle_hash
 
 pytestmark = pytest.mark.browser
 
@@ -317,7 +318,9 @@ def test_fragmented_conversation_preserves_words_sources_and_human_edits(svc, br
     turns = page.locator(".conversation-turn")
     assert turns.count() == 4
     assert turns.nth(0).locator(".turn-words").inner_text() == "Hi, um, good to meet you. Thanks."
-    assert turns.nth(0).locator(".turn-heading").inner_text() == "Me\nContextual model suggestion (unconfirmed)"
+    assert turns.nth(0).locator(".turn-speaker").inner_text() == "Me"
+    assert "Contextual model suggestion (unconfirmed)" in turns.nth(0).locator(".turn-heading").inner_text()
+    assert turns.nth(0).get_by_role("button", name="Accept Me suggestion", exact=True).is_visible()
     assert "Keep every filler." in page.locator(".span-transcript").inner_text()
     assert "Contextual model uncertainty (unconfirmed)" in turns.nth(2).inner_text()
     assert "Imported transcriber tag (unconfirmed)" in turns.nth(3).inner_text()
@@ -382,6 +385,100 @@ def test_fragmented_conversation_preserves_words_sources_and_human_edits(svc, br
     page.screenshot(path=shots / f"11-conversation-reviewed-{scheme}.png", full_page=True)
     assert errors == [] and failed == [], (errors, failed)
     ctx.close()
+
+
+@THEMES
+def test_accepting_one_suggested_block_saves_only_its_speech_and_can_be_undone(svc, browser, shots, scheme):
+    text = ("Review notes: Keep every filler.\n\n"
+            "00:00:01 --> 00:00:02\nSpeaker 1: Hello, welcome.\n\n"
+            "00:00:02 --> 00:00:03\nSpeaker 1: Thanks for coming.\n\n"
+            "00:00:03 --> 00:00:05\nSpeaker 2: How are you?\n\n"
+            "00:00:05 --> 00:00:06\nSpeaker 1: Very well.\n\n"
+            "00:00:06 --> 00:00:08\nSpeaker 2: That is good.\n\n"
+            "00:00:08 --> 00:00:09\nUnknown: Hard to hear.\n")
+    url = new_dataset(svc, "accept-block", [{"name": "one", "text": text, "group": "call"}],
+                      config={"reveal": "always"})
+    key, dataset = "call/one", svc.dataset("demo", "accept-block")
+    original = dataset.item(key)
+    segments = original["segments"]
+    a, b, c, d, e, f = [segment["body"] for segment in segments]
+    suggestions = [{"start": a[0], "end": b[1], "speaker": "ann", "source": "contextual_model"},
+                   {"start": c[0], "end": c[1], "speaker": "bo", "source": "contextual_model"},
+                   {"start": d[0], "end": d[1], "speaker": "ann", "source": "contextual_model"},
+                   {"start": e[0], "end": e[1], "speaker": "bo", "source": "segment_label"},
+                   {"start": f[0], "end": f[1], "speaker": "unclear", "source": "contextual_model"}]
+    item = make_item(key, text, suggestions=suggestions, segments=segments, meta=original["meta"],
+                     source=original["source"])
+    add_items(dataset, svc.home.state_dir("demo", "accept-block"), [{"item": item}], upsert=True)
+    ctx, page, errors, failed = open_page(browser, scheme)
+    login(page, url)
+    open_item(page, key)
+    check_theme(page, scheme)
+    turns = page.locator(".conversation-turn")
+    assert turns.count() == 5
+    assert turns.nth(0).locator(".turn-words").inner_text() == "Hello, welcome. Thanks for coming."
+    assert page.locator("[data-accept-turn]").count() == 4
+    assert turns.nth(4).locator("[data-accept-turn]").count() == 0
+
+    # A prior human decision, even one that disagrees with the proposal, survives acceptance elsewhere.
+    turns.nth(2).locator(".turn-speaker").click()
+    page.keyboard.press("2")
+    wait_for(page, lambda: spans_of(svc, "accept-block", key), "the prior human marking to save")
+    prior = spans_of(svc, "accept-block", key)
+    assert prior == [{"start": d[0], "end": d[1], "speaker": "bo", "origin": "human"}]
+    assert turns.nth(2).locator("[data-accept-turn]").count() == 0
+    first_accept = turns.nth(0).get_by_role("button", name="Accept Ann Able suggestion", exact=True)
+    first_accept.scroll_into_view_if_needed()
+    assert first_accept.is_enabled()
+    bounds = first_accept.bounding_box()
+    assert 0 <= bounds["x"] and bounds["x"] + bounds["width"] <= WIDTH
+    page.screenshot(path=shots / f"14-accept-block-before-{scheme}.png", full_page=True)
+    first_accept.click()
+    wait_for(page, lambda: len(spans_of(svc, "accept-block", key)) == 3, "one suggested block to save")
+    accepted = spans_of(svc, "accept-block", key)
+    expected_evidence = {"speaker": "ann", "origin": "model_confirmed",
+                         "suggestions_sha256": item["suggestions_sha256"],
+                         "suggestion_bundle_sha256": suggestion_bundle_hash(item), "suggestion_evidence_scope": "range"}
+    assert accepted == [{"start": a[0], "end": a[1], **expected_evidence},
+                        {"start": b[0], "end": b[1], **expected_evidence}, *prior]
+    assert turns.nth(0).locator("[data-accept-turn]").count() == 0
+    assert "Human confirmed suggestion" in turns.nth(0).locator(".turn-heading").inner_text()
+    assert turns.nth(0).locator(".word.reviewed").count() == 5
+    assert turns.nth(1).get_by_role("button", name="Accept Bo Brand suggestion", exact=True).is_visible()
+    page.screenshot(path=shots / f"15-accept-block-after-{scheme}.png", full_page=True)
+
+    page.get_by_role("button", name="Undo marking", exact=True).click()
+    wait_for(page, lambda: spans_of(svc, "accept-block", key) == prior, "acceptance to be undone")
+    assert turns.nth(0).get_by_role("button", name="Accept Ann Able suggestion", exact=True).is_visible()
+
+    # Corrected wording still accepts the original word anchors, regardless of replacement length.
+    drag_words(page, c[0], c[1] - 1)
+    page.click("[data-correct-text]")
+    page.fill("[data-corrected-text]", "How have you been?")
+    page.click("[data-save-correction]")
+    page.wait_for_selector(".word.corrected")
+    corrected_turn = turns.filter(has=page.locator(".word.corrected"))
+    corrected_turn.get_by_role("button", name="Accept Bo Brand suggestion", exact=True).click()
+    wait_for(page, lambda: any(r["start"] == c[0] for r in spans_of(svc, "accept-block", key)),
+             "the corrected block's attribution to save")
+    imported_turn = turns.filter(has=page.locator(".turn-words", has_text="That is good."))
+    imported_turn.get_by_role("button", name="Accept Bo Brand suggestion", exact=True).click()
+    wait_for(page, lambda: any(r["origin"] == "suggestion_confirmed" for r in spans_of(svc, "accept-block", key)),
+             "the imported suggestion acceptance to save")
+    final = spans_of(svc, "accept-block", key)
+    assert final == [{"start": c[0], "end": c[1], **{**expected_evidence, "speaker": "bo"}}, *prior,
+                     {"start": e[0], "end": e[1],
+                      **{**expected_evidence, "speaker": "bo", "origin": "suggestion_confirmed"}}]
+    page.reload()
+    open_item(page, key)
+    assert spans_of(svc, "accept-block", key) == final
+    assert page.locator("[data-accept-turn]").count() == 1
+    assert page.locator(".word.corrected.reviewed").inner_text() == "How have you been?"
+    assert "Human confirmed imported suggestion" in imported_turn.locator(".turn-heading").inner_text()
+    assert dataset.item(key)["text"] == text
+    assert errors == [] and failed == [], (errors, failed)
+    ctx.close()
+
 
 def test_a_reveal_queued_behind_a_save_refused_as_stale_is_never_sent(svc, browser):
     # The page's save is refused as stale (the answers file changed outside the server)

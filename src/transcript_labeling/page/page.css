@@ -189,6 +189,8 @@ button:focus-visible,a:focus-visible,textarea:focus-visible,.item:focus-visible{
 .turn-heading>span{font-size:.7rem;color:var(--muted)}
 .turn-speaker{font:600 .85rem var(--sans);color:var(--ink);background:transparent;border:0;padding:0;cursor:pointer;text-align:left}
 .turn-speaker:hover{color:var(--accent);text-decoration:underline}
+.turn-accept{margin-left:auto;padding:3px 10px;color:var(--accent);border-color:var(--accent);background:var(--accentbg)}
+.turn-accept:hover:not(:disabled){text-decoration:underline}
 .turn-source{font-size:.7rem;color:var(--muted);line-height:1.5;margin-top:6px;user-select:none;-webkit-user-select:none}
 .turn-source summary{cursor:pointer;display:list-item;width:fit-content}
 .turn-source p{margin:6px 0}
