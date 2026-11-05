@@ -36,13 +36,15 @@ from .spans import validate_annotation
 from .store import load_answers, load_review
 from .tokens import item_kinds, text_hash
 
-KINDS = ("spans", "segments", "focus", "corrections", "labels", "notes")
+KINDS = ("spans", "segments", "focus", "corrections", "labels", "notes", "suggestions")
 # The only fields a no_text export keeps, per kind and nesting level.
 SPAN_KEEP = ("schema_version", "key", "text_sha256", "token_count", "checked_by", "updated_at", "assisted",
-             "suggestions_sha256")
-RANGE_KEEP = ("start", "end", "speaker", "origin")
+             "suggestions_sha256", "suggestion_bundle_sha256")
+RANGE_KEEP = ("start", "end", "speaker", "origin", "suggestions_sha256", "suggestion_bundle_sha256",
+              "suggestion_evidence_scope")
 SEGMENT_KEEP = ("index", "t_start", "t_end", "start", "end", "reviewed", "speakers", "split", "suggested_speakers")
-PIECE_KEEP = ("start", "end", "speaker", "origin")
+PIECE_KEEP = ("start", "end", "speaker", "origin", "suggestion_source", "suggestions_sha256", "suggestion_bundle_sha256",
+              "suggestion_evidence_scope")
 FOCUS_KEEP = ("qid", "key", "start", "end", "answer", "review_status", "unreviewed_words")
 CORRECTION_KEEP = ("key", "text_sha256", "token_count", "revision", "checked_by", "updated_at",
                    "corrected_text_sha256")
@@ -87,6 +89,22 @@ def _no_text(kind: str, data, ds: Dataset):
         return {**data, "labels": {k: doc(d) for k, d in data["labels"].items()}}
     if kind == "notes":
         return [_pick(n, NOTE_KEEP) for n in data]
+    if kind == "suggestions":
+        def suggestion(value):
+            return {**_pick(value, ("start", "end", "speaker")),
+                    "source": value.get("source") if value.get("source") in ("contextual_model", "segment_label")
+                    else "legacy"}
+        def bundle(value):
+            result = {"suggestions_sha256": value["suggestions_sha256"],
+                      "suggestion_bundle_sha256": value["suggestion_bundle_sha256"],
+                      "suggestions": [suggestion(r) for r in value["suggestions"]]}
+            if "suggestion_provenance" in value:
+                result["suggestion_provenance"] = _pick(value["suggestion_provenance"],
+                    ("method", "model_identity", "prompt_sha256", "request_sha256", "response_sha256"))
+            return result
+        return {key: {**_pick(value, ("text_sha256", "token_count")), **bundle(value),
+                      "suggestion_history": [bundle(prior) for prior in value["suggestion_history"]]}
+                for key, value in data.items()}
     raise ExportError(f"no no_text rule for {kind!r}")
 
 
@@ -110,15 +128,15 @@ def export_dataset(ds: Dataset, kind: str, *, reviewed: dict | None = None, revi
     out = {"schema_version": 1, "tool": f"transcript-labeling {__version__}", "project": ds.project,
            "dataset": ds.name, "kind": kind, "no_text": no_text,
            **({"fill": fill} if fill else {}),
-           "note": "Unmarked words are unknown. Suggestions are never labels unless fill=suggestions says so, "
-                   "and then each filled piece says origin: suggestion.",
+           "note": "Unmarked words are unknown. Suggestions never become human labels. With fill=suggestions, "
+                   "each tentative filled piece says origin: suggestion.",
            **(body if kind == "all" else {"data": body[kind]})}
     return out
 
 
 def _applies(ds: Dataset, kind: str) -> bool:
     return {"spans": "speakers", "segments": "speakers", "focus": "speakers", "corrections": "captions",
-            "labels": "checklist"}.get(kind, ds.modes[0]) in ds.modes
+            "labels": "checklist", "suggestions": "speakers"}.get(kind, ds.modes[0]) in ds.modes
 
 
 def _reviewed(ds: Dataset) -> dict:
@@ -144,7 +162,8 @@ def _labels_at(ranges: list[dict], n: int) -> list:
     at = [None] * n
     for r in ranges:
         for i in range(r["start"], r["end"]):
-            at[i] = (r["speaker"], r.get("origin", "human"))
+            at[i] = (r["speaker"], r.get("origin", "human"), r.get("suggestions_sha256"),
+                     r.get("suggestion_bundle_sha256"), r.get("suggestion_evidence_scope"))
     return at
 
 
@@ -168,6 +187,7 @@ def _segments(ds, answers, review, fill):
     the owner's own ranges only; with `fill=suggestions`, `suggested_speakers` lists
     what the filled pieces add.
     """
+    from .suggestions import suggestion_bundle_hash
     out = {}
     for key in ds.manifest["items"]:
         item = ds.item(key)
@@ -177,8 +197,17 @@ def _segments(ds, answers, review, fill):
         kinds = item_kinds(item)
         offsets = _token_spans(item)
         human = _labels_at((answers["spans"].get(key) or {}).get("ranges", []), item["token_count"])
-        suggested = _labels_at([{**s, "origin": "suggestion"} for s in item.get("suggestions", [])],
+        bundle_hash = suggestion_bundle_hash(item)
+        suggested = _labels_at([{**s, "origin": "suggestion", "suggestions_sha256": item["suggestions_sha256"],
+                                 "suggestion_bundle_sha256": bundle_hash}
+                                for s in item.get("suggestions", [])],
                                item["token_count"]) if fill == "suggestions" else [None] * item["token_count"]
+        suggestion_sources = [None] * item["token_count"]
+        if fill == "suggestions":
+            for suggestion in item.get("suggestions", []):
+                for i in range(suggestion["start"], suggestion["end"]):
+                    source = suggestion.get("source")
+                    suggestion_sources[i] = source if source in ("contextual_model", "segment_label") else "legacy"
         rows = []
         for n, seg in enumerate(segments):
             a, b = seg["body"]
@@ -189,11 +218,24 @@ def _segments(ds, answers, review, fill):
                     if cur and cur["end"] == i and kinds[i] != "meta":
                         cur["end"] = i + 1
                     continue
-                who = human[i] or suggested[i] or (None, None)
-                if cur and cur["speaker"] == who[0] and cur["origin"] == who[1] and cur["end"] == i:
+                who = human[i] or suggested[i] or (None, None, None, None, None)
+                source = suggestion_sources[i] if who[1] == "suggestion" else None
+                if (cur and cur["speaker"] == who[0] and cur["origin"] == who[1] and cur["end"] == i
+                        and cur.get("suggestion_source") == source
+                        and cur.get("suggestions_sha256") == who[2]
+                        and cur.get("suggestion_bundle_sha256") == who[3]
+                        and cur.get("suggestion_evidence_scope") == who[4]):
                     cur["end"] = i + 1
                 else:
                     cur = {"start": i, "end": i + 1, "speaker": who[0], "origin": who[1]}
+                    if who[2] is not None:
+                        cur["suggestions_sha256"] = who[2]
+                    if who[3] is not None:
+                        cur["suggestion_bundle_sha256"] = who[3]
+                    if who[4] is not None:
+                        cur["suggestion_evidence_scope"] = who[4]
+                    if source is not None:
+                        cur.update(suggestion_source=source, suggestions_sha256=item["suggestions_sha256"])
                     pieces.append(cur)
             for piece in pieces:
                 s0, e0 = piece["start"], piece["end"]
@@ -252,8 +294,22 @@ def _notes(ds, answers, review, fill):
     return notes
 
 
+def _suggestions(ds, answers, review, fill):
+    """Export tentative drafts and their provenance separately from human ground truth."""
+    from .suggestions import suggestion_bundle_hash, validate_stored_suggestions
+    result = {}
+    for key in ds.manifest["items"]:
+        item = ds.item(key)
+        validate_stored_suggestions(item, ds.speaker_ids())
+        result[key] = {**_pick(item, ("text_sha256", "token_count", "source", "suggestions_sha256",
+                                     "suggestions", "suggestion_provenance")),
+                       "suggestion_bundle_sha256": suggestion_bundle_hash(item),
+                       "suggestion_history": item.get("suggestion_history", [])}
+    return result
+
+
 EXPORTERS = {"spans": _spans, "segments": _segments, "focus": _focus, "corrections": _corrections,
-             "labels": _labels, "notes": _notes}
+             "labels": _labels, "notes": _notes, "suggestions": _suggestions}
 
 
 # ------------------------------------------------------------------ verify
@@ -290,6 +346,14 @@ def verify_dataset(ds: Dataset, expect_answers_sha256: str | None = None, probe:
                 or item["token_count"] != len(item["tokens"]):
             bad_items.append(f"{key}: item hash or token count differs from the manifest")
     check("every item file matches the manifest's hash and token count", not bad_items, bad_items[:5])
+    from .suggestions import validate_stored_suggestions
+    bad_suggestions = []
+    for key, item in items.items():
+        try:
+            validate_stored_suggestions(item, ds.speaker_ids())
+        except (ValueError, KeyError) as exc:
+            bad_suggestions.append(f"{key}: {exc}")
+    check("current and historical suggestion bundles validate", not bad_suggestions, bad_suggestions)
     bad = []
     for key, value in answers["spans"].items():
         try:
@@ -387,7 +451,10 @@ SCHEMAS = {
                     "description, hints, projects, group, words",
              "focus": "optional passages: [{start, end} or {char_start, char_end}, title?, why?, question?, id?, "
                       "context?: [start, end]]",
-             "suggest_map": "optional 'Label=speaker_id,...': segment labels become model suggestions",
+             "suggest_map": "optional 'Label=speaker_id,...': imported segment-label suggestions",
+             "suggestions": "optional envelope {schema_version:1,text_sha256,token_count,ranges,provenance}; "
+                            "mutually exclusive with suggest_map. Ranges are ordered non-overlapping speech-only "
+                            "{start,end,speaker,source:'contextual_model'} offsets. See docs/API.md for provenance.",
              "source": "optional object kept with the item, such as the file name; its format is always the "
                        "parser's"},
     "dataset": {"title": "", "modes": "subset of checklist, speakers, captions",

@@ -126,3 +126,7 @@ def test_only_the_timing_module_converts_a_mark_to_seconds():
     offenders = [p.name for p in pkg.rglob("*.py") if p.name != "timing.py" and "3600" in p.read_text()]
     assert offenders == []
     assert "3600" in inspect.getsource(V)
+def test_fractional_source_times_are_not_rounded():
+    from transcript_labeling.timing import mark_seconds, mark_times
+    assert mark_seconds("[00:01:02.125]") == 62.125
+    assert mark_times(["[00:01:02.125]", "Hello"]) == [[0, 62.125]]

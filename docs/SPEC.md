@@ -45,8 +45,18 @@ whose hash or token count differs from the item's is refused.
 - `checklist`: questions about each item, from the dataset's checklist. Fields
   with options take one key press.
 
-Model suggestions are drawn dashed and count only when the owner confirms them,
-which saves them with `origin: model_confirmed`.
+Suggestions are drawn dashed and count only when the owner confirms them.
+Contextual model suggestions use `origin: model_confirmed` after confirmation;
+imported tags and other suggestions use `origin: suggestion_confirmed`.
+Historical `model_confirmed` ranges retain their stored value because older
+versions also used it for imported tags. Source tags use `source: segment_label`
+and contextual proposals use `source: contextual_model`. Neither is ground truth.
+
+The contextual pipeline preserves original source text, validates exact turn
+anchors and emits speech-only ranges. A dedicated update replaces suggestions
+under a lock without replacing human state or focus passages, and retains prior
+suggestion bundles. See [CONTEXTUAL.md](CONTEXTUAL.md) for the model-adapter and
+migration contracts. Conversation view changes presentation only.
 
 ## Blind first
 
@@ -88,8 +98,9 @@ $TL_HOME/
   login kind and the file's sha256 after the write. It never holds text.
 - Transcripts reach the service only through `--from-file` (or an MCP tool's
   `file`), read with the caller's permissions. Apart from `tl init`, which makes
-  the home's config and token, the only files `tl` and the MCP server write are
-  exports: under `$TL_HOME/exports/`, or at `--out`.
+  the home's config and token, the client writes exports and contextual request,
+  response and provenance artifacts under private output paths. These paths
+  must remain outside every Git checkout. The service owns dataset writes.
 
 ## Commits in git-private projects
 

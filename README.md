@@ -38,6 +38,13 @@ ask to see them. Your first marks are then your own reading. The service keeps
 a record of the marks you made before you saw the suggestions, so results with
 and without them can be reported apart.
 
+For correction work, choose `--reveal always` to show suggestions immediately.
+The [contextual workflow](docs/CONTEXTUAL.md) can infer tentative speakers from
+the whole conversation using a caller-selected model. It validates exact source
+word ranges and records model provenance separately from imported speaker tags
+and human confirmations. Conversation view groups fragments for reading while
+keeping every original caption and timestamp available.
+
 ## How it works
 
 1. The agent runs `tl new` with the transcript file and the list of speakers.
@@ -102,6 +109,9 @@ The service detects the format of each file:
   a `Label: text` line. The page shows each caption's time and label, and
   `--suggest-map "Speaker 1=jane"` turns those labels into suggestions.
 - **Bracketed time marks**, such as `[00:00:05] Welcome back to the show.`
+- **Bracketed speaker captions**, such as `[00:00:05.125] Speaker 1: Welcome.`
+  Fractional seconds are preserved. These captions provide no end time, so the
+  service does not invent one.
 - **Plain text.**
 
 The service refuses WebVTT and SRT files for now. Convert them to one of the

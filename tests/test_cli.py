@@ -360,3 +360,32 @@ def test_a_config_file_with_a_key_written_twice_is_refused(tmp_path):
     cfg.write_text('{"title": "first", "title": "second"}')
     with pytest.raises(SystemExit, match="a key is written twice"):
         cli.read_json_file(str(cfg))
+
+
+def test_read_transcript_keeps_original_line_endings(tmp_path):
+    source = tmp_path / "source.txt"
+    raw = b"Hello there.\r\nYes hello.\r\n"
+    source.write_bytes(raw)
+    path, text = cli.read_transcript(str(source))
+    assert path == source and text.encode("utf-8") == raw
+
+
+def test_new_config_reveal_and_suggestions_update(tl, tmp_path):
+    from test_service import contextual_bundle
+    from transcript_labeling.suggestions import suggestion_bundle_hash
+    source = tmp_path / "greeting.txt"
+    source.write_text("Hello there. Yes hello.")
+    bundle = contextual_bundle()
+    path = tmp_path / "suggestions.json"
+    path.write_text(json.dumps(bundle))
+    assert tl("new", "demo/call-1", "--from-file", str(source), "--create-project", "--repo", "me/repo",
+              *SPEAKERS, "--reveal", "always", "--suggestions", str(path)) == 0
+    ds = tl.svc.dataset("demo", "call-1")
+    item = ds.item("item/greeting")
+    assert ds.manifest["reveal"] == "always"
+    assert item["suggestions"] == bundle["ranges"]
+    bundle["ranges"][0]["speaker"] = "unclear"
+    path.write_text(json.dumps(bundle))
+    assert tl("suggestions", "set", "demo/call-1", "--item", "item/greeting", "--from-file", str(path),
+              "--expected-bundle-sha256", suggestion_bundle_hash(item), "--repo", "me/repo") == 0
+    assert ds.item("item/greeting")["suggestions"][0]["speaker"] == "unclear"

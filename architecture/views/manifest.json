@@ -1,0 +1,27 @@
+{
+  "files": [
+    "sources/overview.mmd",
+    "sources/overview.figjam.mmd",
+    "sources/overview.d2",
+    "sources/likec4/overview/model.c4",
+    "data/overview.json",
+    "data/overview.html",
+    "sources/provenance.mmd",
+    "sources/provenance.figjam.mmd",
+    "sources/provenance.d2",
+    "sources/likec4/provenance/model.c4",
+    "data/provenance.json",
+    "data/provenance.html",
+    "README.md"
+  ],
+  "likec4_executable": null,
+  "renderer_requested": "none",
+  "renderer_used": "none",
+  "renders": [],
+  "schema": "1.0",
+  "unverified_existing_pngs": [],
+  "views": [
+    "overview",
+    "provenance"
+  ]
+}

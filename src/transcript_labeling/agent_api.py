@@ -6,10 +6,12 @@
   POST projects  {name, writers, repo, title}      a local-only project (git-private: CLI only)
   POST datasets  {project, dataset, config, path?, repo}
   POST items     {project, dataset, repo, upsert, items: [item spec]}
+  POST suggestions {project, dataset, repo, key, suggestions, expected_bundle_sha256}
+  GET  item?project=P&dataset=D&key=G/N            source item and review configuration
   POST new       {project, dataset, repo, create_project, speakers, modes, items, ...}
   POST url       {project, dataset, item?}        a one-time login link for the owner
 
-An item spec is `{name, text, group?, format?, row?, focus?, suggest_map?}`. The
+An item spec is `{name, text, group?, format?, row?, focus?, suggest_map?, suggestions?}`. The
 server parses the text (`formats.py`), so every client gets the same items.
 
 Writes name the calling repository, and a project refuses repositories its
@@ -29,10 +31,10 @@ from .formats import parse, parse_suggest_map, segment_suggestions
 from .items import add_items, make_item
 from .registry import NAME
 
-ITEM_SPEC = {"name", "text", "group", "format", "row", "focus", "suggest_map", "source"}
+ITEM_SPEC = {"name", "text", "group", "format", "row", "focus", "suggest_map", "suggestions", "source"}
 #: The type each item spec field must have, when present (None counts as absent).
 ITEM_SPEC_TYPES = {"name": str, "text": str, "group": str, "format": str, "row": dict, "focus": list,
-                   "suggest_map": (str, dict), "source": dict}
+                   "suggest_map": (str, dict), "suggestions": dict, "source": dict}
 
 
 class ApiError(Exception):
@@ -70,6 +72,8 @@ def item_entry(ds: Dataset, spec: dict) -> dict:
     for field, kind in ITEM_SPEC_TYPES.items():
         if spec.get(field) is not None and not isinstance(spec[field], kind):
             raise ApiError(400, f"item spec field {field!r} has the wrong type ({type(spec[field]).__name__})")
+    if "suggestions" in spec and "suggest_map" in spec:
+        raise ApiError(400, "use suggestions or suggest_map, never both")
     if not all(isinstance(p, dict) for p in spec.get("focus") or []):
         raise ApiError(400, "item spec field 'focus' must be a list of objects")
     name, text = spec.get("name"), spec.get("text")
@@ -87,6 +91,12 @@ def item_entry(ds: Dataset, spec: dict) -> dict:
     source = {**(spec.get("source") or {}), "format": parsed["format"]}  # the parser's word, never the caller's
     item = make_item(f"{group}/{name}", text, suggestions=suggestions, segments=parsed["segments"],
                      meta=parsed["meta"], source=source)
+    if "suggestions" in spec:
+        from .suggestions import apply_bundle
+        try:
+            item = apply_bundle(item, spec["suggestions"], ds.speaker_ids())
+        except ValueError as exc:
+            raise ApiError(400, str(exc)) from exc
     row = {"title": name, **(spec.get("row") or {})}
     return {"item": item, "row": row, "focus": spec.get("focus") or []}
 
@@ -122,6 +132,15 @@ def agent_get(svc, path: str, query: dict) -> tuple[int, dict]:
             return 200, svc.registry.load()
         if route == "status":
             return 200, status_view(svc, _q(query, "project"), _q(query, "dataset"))
+        if route == "item":
+            from .suggestions import suggestion_bundle_hash
+            ds = svc.dataset(_q(query, "project"), _q(query, "dataset"))
+            key = _q(query, "key")
+            if key not in ds.manifest["items"]:
+                raise ApiError(404, "key must name an existing item in this dataset")
+            item = ds.item(key)
+            return 200, {"item": item, "suggestion_bundle_sha256": suggestion_bundle_hash(item),
+                         "config": {field: ds.manifest[field] for field in ("speakers", "unclear", "reveal")}}
         if route == "answers":
             project, dataset = _q(query, "project"), _q(query, "dataset")
             ds = svc.dataset(project, dataset)
@@ -177,6 +196,17 @@ def agent_post(svc, path: str, body: dict, client: str) -> tuple[int, dict]:
             entries = [item_entry(ds, spec) for spec in items]
             res = add_items(ds, svc.home.state_dir(project, dataset), entries, upsert=body.get("upsert") is True)
             return 200, res
+        if route == "suggestions":
+            from .suggestions import update_suggestions
+            fields = {"project", "dataset", "repo", "key", "suggestions", "expected_bundle_sha256",
+                      "owner_override"}
+            if set(body) - fields:
+                raise ApiError(400, f"suggestions update takes only {sorted(fields)}")
+            project, dataset, repo, key, bundle, expected = _need(
+                body, "project", "dataset", "repo", "key", "suggestions", "expected_bundle_sha256")
+            _writable(svc, project, repo, client, override)
+            return 200, update_suggestions(svc.dataset(project, dataset), svc.home.state_dir(project, dataset),
+                                           key, bundle, expected)
         if route == "new":
             return 200, agent_new(svc, body, client)
         if route == "url":
@@ -191,6 +221,8 @@ def agent_post(svc, path: str, body: dict, client: str) -> tuple[int, dict]:
         return exc.code, {"error": str(exc)}
     except SystemExit as exc:
         return 409, {"error": str(exc)}
+    except (ValueError, OSError) as exc:
+        return 409, {"error": f"{type(exc).__name__}: {exc}"}
 
 
 def agent_new(svc, body: dict, client: str) -> dict:

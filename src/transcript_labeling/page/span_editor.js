@@ -3,7 +3,7 @@
 let spanAnswers = {};
 const transcriptCache = {}, transcriptLoads = {}, spanSelections = {}, spanFull = {}, spanSample = {};
 const spanUndo = {}, spanSaves = {}, spanErrors = {}, spanPending = {};
-const spanEditing = {};
+const spanEditing = {}, spanSourceView = {};
 // The editor where words were last selected, as "<item key>:<editor index>", so a
 // speaker's key can label them.
 let spanLast = null;
@@ -28,7 +28,18 @@ function spanWindow(recording,index){
  return [passage?.start||0,Math.min(passage?.end||130,data.tokens.length)];
 }
 function humanRanges(recording){
- if(spanAnswers[recording.key])return spanAnswers[recording.key].ranges;
+ if(spanAnswers[recording.key]){
+  const saved=spanAnswers[recording.key];
+  return saved.ranges.map(range=>{
+   if(!["model_confirmed","suggestion_confirmed"].includes(range.origin))return range;
+   if(range.suggestion_evidence_scope!==undefined||range.suggestions_sha256!==undefined||range.suggestion_bundle_sha256!==undefined)return range;
+   const evidence={};
+   for(const field of ["suggestions_sha256","suggestion_bundle_sha256"])
+    if(range[field]===undefined&&saved[field]!==undefined)evidence[field]=saved[field];
+   evidence.suggestion_evidence_scope="legacy_annotation";
+   return {...evidence,...range};
+  });
+ }
  // Preserve earlier whole-quote human answers; "both" supplies no boundary.
  let ranges=[];
  for(const quote of recording.quotes){const answer=attrib[quote.qid]?.answer;
@@ -36,29 +47,111 @@ function humanRanges(recording){
    ranges=paintRanges(ranges,quote.quote_start,quote.quote_end,answer);}
  return ranges;
 }
-function draftLabels(data){
- if(data.draftLabels)return data.draftLabels;
- const values=Array.from({length:data.tokens.length},()=>new Set());
- for(const suggestion of data.suggestions) for(let i=suggestion.start;i<suggestion.end;i++) values[i].add(suggestion.speaker);
- return data.draftLabels=values.map(v=>v.size>1?"conflict":([...v][0]||"unknown"));
+function draftStates(data){
+ if(data.draftStates)return data.draftStates;
+ const values=Array.from({length:data.tokens.length},()=>({speakers:new Set(),sources:new Set()}));
+ for(const suggestion of data.suggestions) for(let i=suggestion.start;i<suggestion.end;i++){
+  values[i].speakers.add(suggestion.speaker);values[i].sources.add(suggestion.source||"unspecified");
+ }
+ return data.draftStates=values.map(v=>({speaker:v.speakers.size>1?"conflict":([...v.speakers][0]||"unknown"),
+  draft:true,source:v.sources.size>1?"multiple":([...v.sources][0]||"none")}));
+}
+function draftLabels(data){return draftStates(data).map(s=>s.speaker);}
+function applyRevealedSuggestions(data,res){
+ data.suggestions=res.suggestions;data.suggestions_hidden=0;
+ data.suggestions_sha256=res.suggestions_sha256;
+ data.suggestion_bundle_sha256=res.suggestion_bundle_sha256;
+ if(res.suggestion_provenance)data.suggestion_provenance=res.suggestion_provenance;
+ else delete data.suggestion_provenance;
+ delete data.draftStates;
 }
 function statesFor(recording){
- const data=transcriptCache[recording.key], states=draftLabels(data).map(speaker=>({speaker,draft:true}));
- for(const range of humanRanges(recording)) for(let i=range.start;i<range.end;i++) states[i]={speaker:range.speaker,draft:false};
+ const data=transcriptCache[recording.key], states=draftStates(data).map(s=>({...s}));
+ for(const range of humanRanges(recording)) for(let i=range.start;i<range.end;i++) states[i]={speaker:range.speaker,draft:false,source:range.origin||"human"};
  return states;
 }
-function paintRanges(ranges,start,end,speaker,origin="human"){
+function attributionDescription(state){
+ // Historical model_confirmed also covered imported tags; its name alone cannot
+ // establish that a model ran. The saved suggestion hash retains the evidence.
+ if(!state.draft)return state.source==="model_confirmed"?"Human confirmed suggestion":state.source==="suggestion_confirmed"?"Human confirmed imported suggestion":"Human reviewed";
+ if(state.speaker==="unknown")return "No attribution";
+ if(state.speaker==="conflict")return "Conflicting suggestions";
+ if(state.source==="segment_label")return "Imported transcriber tag (unconfirmed)";
+ if(state.source==="contextual_model")return state.speaker===UNCLEAR.id?"Contextual model uncertainty (unconfirmed)":"Contextual model suggestion (unconfirmed)";
+ return state.source==="multiple"?"Suggestions from multiple sources (unconfirmed)":"Imported suggestion (unconfirmed)";
+}
+function sameAttribution(a,b){return a.speaker===b.speaker&&a.draft===b.draft&&a.source===b.source;}
+function displayUnit(data,states,edits,i){
+ const edit=edits.find(e=>e.start<=i&&i<e.end),start=edit?.start??i,end=edit?.end??(i+1);
+ let state=states[i];
+ if(edit&&states.slice(start,end).some(s=>!sameAttribution(s,state)))state={speaker:"conflict",draft:true,source:"multiple"};
+ return {kind:data.token_kinds[i],start,end,text:edit?.replacement??data.tokens[i],state,edit};
+}
+function transcriptTurns(data,states,edits,lo,hi){
+ // Group only the reading. Every word and correction retains its raw-token anchor.
+ // No length or time-gap heuristic changes a turn. Attribution changes, explicit
+ // caption turn marks, gaps and notes break it. Unknown speech follows source labels.
+ const segments=data.segments||[], owners=new Map(),headers=new Set();
+ for(const seg of segments){
+  for(let i=seg.header[0];i<seg.header[1];i++)headers.add(i);
+  for(let i=seg.body[0];i<seg.body[1];i++)owners.set(i,seg);
+ }
+ const parts=[];let turn=null;
+ for(let i=lo;i<hi;i++){
+  if(headers.has(i))continue;
+  const unit=displayUnit(data,states,edits,i),seg=owners.get(i);
+  if(unit.kind!=="speech"){
+   if(turn&&(unit.kind==="timestamp"||unit.kind==="punctuation"))turn.units.push(unit);
+   else {parts.push(unit);turn=null;}
+   continue;
+  }
+  const label=seg?.label||"";
+  if(!turn||!sameAttribution(turn.state,unit.state)||(unit.state.speaker==="unknown"&&turn.sourceLabel!==label)){
+   turn={kind:"turn",start:unit.start,end:unit.end,state:unit.state,sourceLabel:label,units:[],segments:[]};parts.push(turn);
+  }
+  turn.units.push(unit);turn.end=unit.end;
+  if(seg&&!turn.segments.includes(seg))turn.segments.push(seg);
+  if(unit.edit)i=unit.end-1;
+ }
+ return parts;
+}
+function wordMarkup(unit,recording,quote){
+ const {start,end,state,edit}=unit,isQuote=quote&&start<quote.quote_end&&end>quote.quote_start;
+ const tip=state.speaker==="conflict"&&edit?"This corrected phrase has mixed markings. Label it as a whole, or restore the original to label words separately.":
+  attributionDescription(state)+(state.speaker==="unknown"||state.speaker==="conflict"?"":": "+speakerLabel(state.speaker,recording));
+ return `<span data-w="${start}" data-end="${end}" class="word ${speakerClass(state.speaker)} ${state.draft?"draft":"reviewed"} ${isQuote?"evidence":""} ${edit?"corrected":""}" title="${esc(tip+(edit?'. Text corrected; original: '+edit.original:''))}">${esc(unit.text)} </span>`;
+}
+function markerMarkup(unit){
+ const cls=unit.kind==="meta"?"caption-meta":unit.kind==="timestamp"?"caption-marker-time":unit.kind==="gap"?"caption-gap":unit.kind==="turn"?"caption-turn":"caption-punctuation";
+ return `<span class="${cls}" contenteditable="false">${esc(unit.text)} </span>`;
+}
+function sourceHeader(data,seg){
+ // Show the original interval, including fractional seconds, and the original label.
+ return esc(data.tokens.slice(seg.header[0],seg.header[1]).join(" "));
+}
+function conversationMarkup(data,states,edits,lo,hi,recording,quote){
+ return transcriptTurns(data,states,edits,lo,hi).map(part=>{
+  if(part.kind!=="turn"||!part.units)return markerMarkup(part);
+  const label=part.state.speaker==="unknown"?"Unassigned":part.state.speaker==="conflict"?"Mixed attribution":speakerLabel(part.state.speaker,recording);
+  return `<section class="conversation-turn"><div class="turn-heading"><button type="button" class="turn-speaker" data-seg="${part.start},${part.end}" title="Select this turn">${esc(label)}</button><span>${esc(attributionDescription(part.state))}</span></div>
+   <div class="turn-words">${part.units.map(u=>u.kind==="speech"?wordMarkup(u,recording,quote):markerMarkup(u)).join("")}</div>
+   ${part.segments.length?`<details class="turn-source"><summary>${part.segments.length} original caption${part.segments.length===1?"":"s"}</summary><p>Original caption times and labels. A caption may contain more than one speaker.</p>${part.segments.map(seg=>`<button type="button" class="seg-head" data-seg="${seg.body[0]},${seg.body[1]}" title="Select this original caption">${sourceHeader(data,seg)}</button>`).join("")}</details>`:""}</section>`;
+ }).join("");
+}
+function paintRanges(ranges,start,end,speaker,origin="human",evidence={}){
  const kept=[];
  for(const range of ranges){
   if(range.end<=start||range.start>=end){kept.push({...range});continue;}
   if(range.start<start)kept.push({...range,end:start});
   if(range.end>end)kept.push({...range,start:end});
  }
- if(speaker)kept.push({start,end,speaker,origin});
+ if(speaker)kept.push({start,end,speaker,origin,...evidence});
  kept.sort((a,b)=>a.start-b.start);
  const merged=[];
  for(const range of kept){const last=merged.at(-1);
-  if(last&&last.end===range.start&&last.speaker===range.speaker&&last.origin===range.origin)last.end=range.end;
+  if(last&&last.end===range.start&&last.speaker===range.speaker&&last.origin===range.origin&&
+    last.suggestions_sha256===range.suggestions_sha256&&last.suggestion_bundle_sha256===range.suggestion_bundle_sha256&&
+    last.suggestion_evidence_scope===range.suggestion_evidence_scope)last.end=range.end;
   else merged.push(range);}
  return merged;
 }
@@ -72,9 +165,10 @@ function saveRanges(recording,ranges){
  }
  const value={schema_version:1,key:recording.key,text_sha256:data.text_sha256,token_count:data.token_count,
   ranges,updated_at:new Date().toISOString(),  // the server sets checked_by
-  // Assisted only when the editor showed model suggestions for this recording.
+  // Assisted only when the editor showed imported or contextual suggestions.
   assisted:data.suggestions.length>0,
-  suggestions_sha256:data.suggestions_sha256};
+  suggestions_sha256:data.suggestions_sha256,
+  ...(data.suggestion_bundle_sha256?{suggestion_bundle_sha256:data.suggestion_bundle_sha256}:{})};
  spanAnswers[recording.key]=value;spanErrors[recording.key]="";
  spanPending[recording.key]=(spanPending[recording.key]||0)+1;
  spanSaves[recording.key]=(spanSaves[recording.key]||Promise.resolve()).then(()=>saver.put("spans",recording.key,value)).then(result=>{
@@ -110,8 +204,14 @@ function confirmDrafts(recording,index){
  const [start,end]=spanWindow(recording,index), states=statesFor(recording);let ranges=humanRanges(recording);
  rememberRanges(recording);
  for(let i=start;i<end;){const label=states[i];let j=i+1;
-  while(j<end&&states[j].speaker===label.speaker&&states[j].draft===label.draft)j++;
-  if(label.draft&&SPEAKER_IDS.includes(label.speaker))ranges=paintRanges(ranges,i,j,label.speaker,"model_confirmed");
+  while(j<end&&sameAttribution(states[j],label))j++;
+  if(label.draft&&SPEAKER_IDS.includes(label.speaker)){
+   const data=transcriptCache[recording.key],evidence={};
+   for(const field of ["suggestions_sha256","suggestion_bundle_sha256"])
+    if(data[field]!==undefined)evidence[field]=data[field];
+   if(Object.keys(evidence).length)evidence.suggestion_evidence_scope="range";
+   ranges=paintRanges(ranges,i,j,label.speaker,label.source==="contextual_model"?"model_confirmed":"suggestion_confirmed",evidence);
+  }
   i=j;
  }
  saveRanges(recording,ranges);
@@ -176,32 +276,25 @@ function drawSpanEditor(recording,index){
  const spoken=speechIndices(data,lo,hi);
  const markable=spoken.some(i=>states[i].draft&&SPEAKER_IDS.includes(states[i].speaker));
  const segments=data.segments||[], segHead=new Map(segments.map(s=>[s.header[0],s]));
- const known=spoken.filter(i=>draftLabels(data)[i]!=="unknown").length;
+ const drafts=draftLabels(data),known=spoken.filter(i=>drafts[i]!=="unknown").length;
  const timestamps=new Map(data.times);
- let words="";
- for(let i=lo;i<hi;i++){
-  const edit=edits.find(e=>e.start<=i&&i<e.end),start=edit?.start??i,end=edit?.end??(i+1);
-  let state=states[i];
-  if(edit&&states.slice(start,end).some(s=>s.speaker!==state.speaker||s.draft!==state.draft))state={speaker:"conflict",draft:true};
-  const token=edit?.replacement??data.tokens[i],isQuote=quote&&start<quote.quote_end&&end>quote.quote_start;
-  const tip=state.speaker==="unknown"?"Unknown — no attribution":state.speaker==="conflict"?(edit?"This corrected phrase has mixed markings. Label it as a whole, or restore the original to label words separately.":"Models disagree — review this text"):
-   `${state.draft?"Model suggestion (unconfirmed)":"Human reviewed"}: ${speakerLabel(state.speaker,recording)}`;
+ let words=spanSourceView[id]?"":conversationMarkup(data,states,edits,lo,hi,recording,quote);
+ for(let i=lo;spanSourceView[id]&&i<hi;i++){
+  const unit=displayUnit(data,states,edits,i);
   const kind=data.token_kinds[i];
   if(kind==="meta"){
    // A caption segment's header (its clock time and original label) is shown, never
    // labelled; clicking it selects the caption's words. Other header text (notes
    // before the first caption) is shown muted.
    const seg=segHead.get(i);
-   if(seg) words+=`<span class="seg-head" contenteditable="false" data-seg="${seg.body[0]},${seg.body[1]}" title="Select this caption">${fmtT(seg.t_start)} · ${esc(seg.label||"no label")}</span>`;
+   if(seg) words+=`<button type="button" class="seg-head" data-seg="${seg.body[0]},${seg.body[1]}" title="Select this original caption">Original: ${sourceHeader(data,seg)}</button>`;
    else if(!segments.some(s=>s.header[0]<=i&&i<s.header[1])) words+=`<span class="caption-meta" contenteditable="false">${esc(data.tokens[i])} </span>`;
   }else if(kind==="timestamp"){
    const link=mediaUrl(recording,timestamps.get(i));
-   if(spanFull[id]) words+=`<span class="caption-time" contenteditable="false">${link?`<a href="${esc(link)}" target="_blank" rel="noopener">▶ ${fmtT(timestamps.get(i))}</a>`:fmtT(timestamps.get(i))}</span>`;
-  }else if(kind==="turn") words+='<span class="caption-turn" contenteditable="false" aria-label="Caption speaker break"> / </span>';
-  else if(kind!=="speech"){
-   if(kind==="gap"&&(i===lo||data.token_kinds[i-1]!=="gap")) words+='<span class="caption-gap" contenteditable="false" title="Words missing or obscured in the captions; not part of speaker labeling">caption gap</span> ';
-  }else words+=`<span data-w="${start}" data-end="${end}" class="word ${speakerClass(state.speaker)} ${state.draft?"draft":"reviewed"} ${isQuote?"evidence":""} ${edit?"corrected":""}" title="${esc(tip+(edit?'. Text corrected; original: '+edit.original:''))}">${esc(token)} </span>`;
-  if(edit)i=end-1;
+   words+=`<span class="caption-time" contenteditable="false">${link?`<a href="${esc(link)}" target="_blank" rel="noopener">▶ ${esc(unit.text)}</a>`:esc(unit.text)}</span>`;
+  }else if(kind!=="speech") words+=markerMarkup(unit);
+  else words+=wordMarkup(unit,recording,quote);
+  if(unit.edit)i=unit.end-1;
 
  }
  const SPK=HAS("speakers"),CAP=HAS("captions"),excerpts=recording.excerpts||[];
@@ -212,9 +305,9 @@ function drawSpanEditor(recording,index){
  const marked=humanRanges(recording).filter(range=>range.start<hi&&range.end>lo&&speechIndices(data,Math.max(lo,range.start),Math.min(hi,range.end)).length);
  root.innerHTML=`${top?`<div class="span-top">${top}</div>`:""}
   <p class="span-instructions">Select words, then ${SPK&&CAP?"choose who said them or use Correct text for caption errors":SPK?"choose who said them":"use Correct text for caption errors"}. Caption gaps and playback times are skipped automatically.</p>
-  <div class="span-legend">${SPEAKERS.map(sp=>`<span class="${speakerClass(sp.id)} reviewed">${esc(speakerLabel(sp.id,recording))} · reviewed</span>`).join("")}<span class="unclear reviewed">${esc(UNCLEAR.label)}</span><span class="${speakerClass(SPEAKER_IDS[0])} draft">Dashed · model suggestion</span><span>Plain · not reviewed</span>${quote?'<span class="evidence">Underline · passage being checked</span>':""}</div>
-  ${data.suggestions_hidden?`<p class="span-model"><button type="button" class="opt" data-reveal ${writable?"":"disabled"}>Show model suggestions (${data.suggestions_hidden})</button> Hidden until you ask, so what you mark first is your own reading. The ranges you have marked so far are kept as your blind answer.</p>`:""}
-  <p class="span-model">${known?"Model estimates cover "+known+" of these "+spoken.length+" words. Confirm or correct the dashed suggestions.":`${data.suggestions_hidden?"":"No model suggestions for these words. "}Label the words you can identify; use “${esc(UNCLEAR.label)}” when you cannot identify the speaker.`} ${states.slice(lo,hi).some(s=>s.speaker==="conflict")?"Models disagree on the dotted words; review those yourself.":""}</p>
+  <div class="span-legend">${SPEAKERS.map(sp=>`<span class="${speakerClass(sp.id)} reviewed">${esc(speakerLabel(sp.id,recording))} · reviewed</span>`).join("")}<span class="unclear reviewed">${esc(UNCLEAR.label)} · reviewed</span><span class="${speakerClass(SPEAKER_IDS[0])} draft">Dashed · unconfirmed suggestion</span><span>Plain · not reviewed</span>${quote?'<span class="evidence">Underline · passage being checked</span>':""}</div>
+  ${data.suggestions_hidden?`<p class="span-model"><button type="button" class="opt" data-reveal ${writable?"":"disabled"}>Show suggestions (${data.suggestions_hidden})</button> Hidden until you ask, so what you mark first is your own reading. The ranges you have marked so far are kept as your blind answer.</p>`:""}
+  <p class="span-model">${known?"Suggestions cover "+known+" of these "+spoken.length+" words. Confirm or correct them; their source is shown with each turn.":`${data.suggestions_hidden?"":"No suggestions for these words. "}Label the words you can identify; use “${esc(UNCLEAR.label)}” when you cannot identify the speaker.`} ${states.slice(lo,hi).some(s=>s.speaker==="conflict")?"Attributions conflict on the dotted words; review those yourself.":""}</p>
   ${index<0&&!spanFull[id]&&excerpts.length?`<label class="span-samples">Passage <select data-sample>${excerpts.map((e,i)=>`<option value="${i}" ${i===(spanSample[recording.key]||0)?"selected":""}>${Math.round(e.at*100)}% into the transcript</option>`).join("")}</select></label>`:""}
   <div class="span-actions"><div class="span-selection" aria-live="polite"></div><div class="opts">
    ${SPK?`${SPEAKERS.map(sp=>`<button class="opt ${speakerClass(sp.id)}" type="button" data-paint="${esc(sp.id)}">${esc(speakerLabel(sp.id,recording))} <kbd>${esc(sp.key)}</kbd></button>`).join("")}
@@ -223,6 +316,8 @@ function drawSpanEditor(recording,index){
    <div class="span-boundaries" hidden><label>Selection start <input type="range" data-edge="start" aria-label="Selection start word"></label><label>Selection end <input type="range" data-edge="end" aria-label="Selection end word"></label></div>
   </div>
   ${correctionPanel(recording,index,lo,hi)}
+  <div class="transcript-view" role="group" aria-label="Transcript display"><button type="button" class="opt" data-transcript-view="conversation" aria-pressed="${!spanSourceView[id]}">Conversation</button><button type="button" class="opt" data-transcript-view="source" aria-pressed="${!!spanSourceView[id]}">Source captions</button></div>
+  ${spanSourceView[id]?'<p class="span-instructions">Original caption boundaries and labels. Your text corrections appear in both views.</p>':""}
   <div class="span-transcript" tabindex="0" role="region" aria-label="Transcript passage for speaker annotation">${words}</div>
   <div class="opts">${SPK?`<button type="button" class="opt" data-confirm ${!writable||!markable?"disabled":""}>Confirm suggested spans in ${view}</button>`:""}
    <button type="button" class="opt" data-undo ${!writable||!spanUndo[recording.key]?.length?"disabled":""}>Undo marking</button>
@@ -235,6 +330,7 @@ function drawSpanEditor(recording,index){
 
  const expand=root.querySelector("[data-expand]");
  if(expand)expand.onclick=()=>{spanFull[id]=!spanFull[id];delete spanSelections[id];delete spanEditing[id];drawSpanEditor(recording,index);};
+ root.querySelectorAll("[data-transcript-view]").forEach(button=>button.onclick=()=>{spanSourceView[id]=button.dataset.transcriptView==="source";drawSpanEditor(recording,index);});
  root.querySelectorAll("[data-seg]").forEach(head=>head.onclick=()=>{
   const [a,b]=head.dataset.seg.split(",").map(Number);if(b<=a)return;
   spanSelections[id]=correctionBounds(recording,a,b);delete spanEditing[id];spanLast=id;spanToolbar(recording,index);
@@ -245,7 +341,7 @@ function drawSpanEditor(recording,index){
   reveal.disabled=true;
   // Reveal after every span save already sent, so ranges_before_reveal holds the last blind mark.
   spanSaves[recording.key]=(spanSaves[recording.key]||Promise.resolve()).catch(()=>{}).then(()=>{if(!writable)throw new Error("this page can no longer save; reload it");return saver.post("api/reveal",{key:recording.key});}).then(res=>{
-   data.suggestions=res.suggestions;data.suggestions_hidden=0;delete data.draftLabels;drawAllSpans(recording);
+   applyRevealedSuggestions(data,res);drawAllSpans(recording);
   }).catch(error=>{reveal.disabled=false;spanErrors[recording.key]=error.message||String(error);updateSpanStatus(recording);});
  };
  const sample=root.querySelector("[data-sample]");if(sample)sample.onchange=()=>{spanSample[recording.key]=+sample.value;delete spanSelections[id];drawSpanEditor(recording,index);};

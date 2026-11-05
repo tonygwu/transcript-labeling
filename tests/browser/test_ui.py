@@ -39,6 +39,7 @@ from transcript_labeling import cli
 from transcript_labeling.client import ServiceClient
 from transcript_labeling.export3 import export_dataset
 from transcript_labeling.home import Home
+from transcript_labeling.items import add_items, make_item
 from transcript_labeling.service import Service, build_service_server
 
 pytestmark = pytest.mark.browser
@@ -49,9 +50,9 @@ BRACKET = ("[00:00:05] Welcome back to the show. >> Thanks for having me. [00:00
            "will open next spring, and the budget holds. >> That is good news for the town. [00:00:31] "
            "The second span opens in the autumn if the steel arrives on time.")
 WIDTH, HEIGHT = 390, 844
-#: A word drawn as a model suggestion. Plain unreviewed words also carry the `draft` class
+#: A word drawn as a suggestion. Plain unreviewed words also carry the `draft` class
 #: (their speaker is "unknown"), so the title is what tells a suggestion apart.
-SUGGESTED = '.span-transcript .word[title^="Model suggestion"]'
+SUGGESTED = '.span-transcript .word[title*="(unconfirmed)"]'
 #: The light theme's page background (page.css `--bg`); dark must differ from it.
 LIGHT_BG = "rgb(244, 244, 242)"
 THEMES = pytest.mark.parametrize("scheme", ["light", "dark"])
@@ -211,7 +212,7 @@ def test_the_zoom_flow(svc, browser, shots, scheme):
     editor = '[data-span-editor="-1"]'
     assert page.locator(f"{editor} [data-sample]").count() == 0
     assert page.locator(f"{editor} .span-top b").count() == 0
-    assert "No model suggestions" not in page.inner_text(editor)
+    assert "No suggestions" not in page.inner_text(editor)
     page.screenshot(path=shots / f"02-item-{scheme}.png", full_page=True)
 
     # MARK and SPLIT: the first five words of one caption as Ann, the rest as Bo.
@@ -288,6 +289,99 @@ def test_the_zoom_flow(svc, browser, shots, scheme):
     assert errors2 == [] and failed2 == [(409, "/api/login")], (errors2, failed2)
     ctx2.close()
 
+
+@THEMES
+def test_fragmented_conversation_preserves_words_sources_and_human_edits(svc, browser, shots, scheme):
+    text = ("Review notes: Keep every filler.\n\n"
+            "00:00:01 --> 00:00:02\nUnknown: Hi,\n\n"
+            "00:00:02 --> 00:00:03\nSpeaker 1: um, good to meet you.\n\n"
+            "00:00:03 --> 00:00:05\nSpeaker 1: Thanks. How are you?\n\n"
+            "00:00:05 --> 00:00:06\nUnknown: Hard to hear.\n\n"
+            "00:00:06 --> 00:00:08\nSpeaker 2: Fine, thanks.\n")
+    url = new_dataset(svc, "fragments", [{"name": "one", "text": text, "group": "call"}],
+                      speakers=[{"id": "ann", "label": "Me", "key": "1"},
+                                {"id": "bo", "label": "Interviewer", "key": "2"}], config={"reveal": "always"})
+    key, dataset = "call/one", svc.dataset("demo", "fragments")
+    original = dataset.item(key)
+    segments = original["segments"]
+    a, b, c, d, e = [s["body"] for s in segments]
+    suggestions = [{"start": a[0], "end": c[0] + 1, "speaker": "ann", "source": "contextual_model"},
+                   {"start": c[0] + 1, "end": c[1], "speaker": "bo", "source": "contextual_model"},
+                   {"start": d[0], "end": d[1], "speaker": "unclear", "source": "contextual_model"},
+                   {"start": e[0], "end": e[1], "speaker": "bo", "source": "segment_label"}]
+    item = make_item(key, text, suggestions=suggestions, segments=segments, meta=original["meta"], source=original["source"])
+    add_items(dataset, svc.home.state_dir("demo", "fragments"), [{"item": item}], upsert=True)
+    ctx, page, errors, failed = open_page(browser, scheme)
+    login(page, url)
+    open_item(page, key)
+    turns = page.locator(".conversation-turn")
+    assert turns.count() == 4
+    assert turns.nth(0).locator(".turn-words").inner_text() == "Hi, um, good to meet you. Thanks."
+    assert turns.nth(0).locator(".turn-heading").inner_text() == "Me\nContextual model suggestion (unconfirmed)"
+    assert "Keep every filler." in page.locator(".span-transcript").inner_text()
+    assert "Contextual model uncertainty (unconfirmed)" in turns.nth(2).inner_text()
+    assert "Imported transcriber tag (unconfirmed)" in turns.nth(3).inner_text()
+    assert page.locator("[data-sample]").count() == 0
+    assert page.locator("[data-reveal]").count() == 0
+    assert page.locator(".word.reviewed").count() == 0
+    assert spans_of(svc, "fragments", key) == []
+    # The first turn groups three original captions; splitting the third does not invent a time.
+    turns.nth(0).locator("summary").click()
+    assert turns.nth(0).locator(".seg-head").all_inner_texts() == [
+        "00:00:01 --> 00:00:02 Unknown:", "00:00:02 --> 00:00:03 Speaker 1:",
+        "00:00:03 --> 00:00:05 Speaker 1:"]
+    turns.nth(0).locator("summary").click()
+    turns.nth(1).locator("summary").click()
+    assert turns.nth(1).locator(".seg-head").inner_text() == "00:00:03 --> 00:00:05 Speaker 1:"
+    turns.nth(1).locator("summary").click()
+    page.screenshot(path=shots / f"10-conversation-{scheme}.png", full_page=True)
+
+    # A human attribution uses the same source offsets in either view and overrides the guess.
+    turns.nth(0).locator(".turn-speaker").click()
+    page.keyboard.press("2")
+    wait_for(page, lambda: spans_of(svc, "fragments", key), "the grouped turn marking to save")
+    assert [(r["start"], r["end"], r["speaker"]) for r in spans_of(svc, "fragments", key)] == [(a[0], c[0] + 1, "bo")]
+    assert turns.nth(0).locator(".turn-heading").inner_text() == "Interviewer\nHuman reviewed"
+    page.click('[data-transcript-view="source"]')
+    assert page.locator(".conversation-turn").count() == 0
+    assert page.locator(".span-transcript .seg-head").count() == 5
+    assert page.locator(".span-transcript .seg-head").first.inner_text() == "Original: 00:00:01 --> 00:00:02 Unknown:"
+    assert page.locator(f'.word[data-w="{a[0]}"]').get_attribute("title") == "Human reviewed: Interviewer"
+    page.screenshot(path=shots / f"12-source-captions-{scheme}.png", full_page=True)
+    page.click('[data-transcript-view="conversation"]')
+
+    # Caption wording remains a separate correction with its original word anchors.
+    drag_words(page, c[0] + 1, c[1] - 1)
+    page.click("[data-correct-text]")
+    page.fill("[data-corrected-text]", "How have you been?")
+    page.click("[data-save-correction]")
+    page.wait_for_selector(".word.corrected")
+    corrected = page.locator(".word.corrected")
+    assert corrected.inner_text() == "How have you been?"
+    assert corrected.get_attribute("data-w") == str(c[0] + 1)
+    assert corrected.get_attribute("data-end") == str(c[1])
+    saved = svc.answers_store("demo", "fragments", dataset).load()
+    assert saved["corrections"][key]["edits"][0]["original"] == "How are you?"
+    assert dataset.item(key)["text"] == text
+
+    # Bulk confirmation preserves whether evidence came from a model or source tags.
+    page.click("[data-confirm]")
+    wait_for(page, lambda: any(r["origin"] == "suggestion_confirmed" for r in spans_of(svc, "fragments", key)),
+             "the imported suggestion confirmation to save")
+    ranges = spans_of(svc, "fragments", key)
+    assert [(r["start"], r["end"], r["origin"]) for r in ranges] == [
+        (a[0], c[0] + 1, "human"), (c[0] + 1, c[1], "model_confirmed"), (e[0], e[1], "suggestion_confirmed")]
+    # Model uncertainty is not silently confirmed by that button. The owner's u key is explicit.
+    unsure = page.locator(".conversation-turn").filter(has=page.locator(".turn-speaker", has_text="Unsure"))
+    assert "Contextual model uncertainty" in unsure.inner_text()
+    unsure.locator(".turn-speaker").click()
+    page.keyboard.press("u")
+    wait_for(page, lambda: any(r["speaker"] == "unclear" for r in spans_of(svc, "fragments", key)),
+             "the human Unsure label to save")
+    assert "Human reviewed" in unsure.inner_text()
+    page.screenshot(path=shots / f"11-conversation-reviewed-{scheme}.png", full_page=True)
+    assert errors == [] and failed == [], (errors, failed)
+    ctx.close()
 
 def test_a_reveal_queued_behind_a_save_refused_as_stale_is_never_sent(svc, browser):
     # The page's save is refused as stale (the answers file changed outside the server)

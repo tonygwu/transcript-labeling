@@ -175,3 +175,30 @@ def test_suggest_map_and_segment_suggestions():
     with pytest.raises(SystemExit, match="speakers the dataset does not have"):
         segment_suggestions(p["segments"], {"Ann Able": "zed"}, ["ann"])
     assert segment_suggestions(p["segments"], {}, ["ann"]) == []
+def test_bracket_speaker_captions_keep_fractional_times_and_no_invented_end():
+    from transcript_labeling.formats import parse
+    from transcript_labeling.tokens import token_kinds, tokenize
+    text = "[00:00:01.250] Speaker 1: Hello\n[00:00:02.125] Unknown: there yes\n"
+    parsed = parse(text)
+    assert parsed["format"] == "bracket-speakers"
+    assert parsed["segments"] == [
+        {"label": "Speaker 1", "t_start": 1.25, "t_end": None, "header": [0, 3], "body": [3, 4]},
+        {"label": "Unknown", "t_start": 2.125, "t_end": None, "header": [4, 6], "body": [6, 8]},
+    ]
+    kinds = token_kinds(tokenize(text), parsed["meta"])
+    assert [t for t, k in zip(tokenize(text), kinds) if k == "speech"] == ["Hello", "there", "yes"]
+
+
+def test_fractional_bracket_timestamp_without_speaker_is_non_speech():
+    from transcript_labeling.formats import parse
+    from transcript_labeling.tokens import token_kinds, tokenize
+    text = "[00:00:01.125] Hello there"
+    assert parse(text)["format"] == "bracket-ts"
+    assert token_kinds(tokenize(text)) == ["timestamp", "speech", "speech"]
+
+
+def test_broken_bracket_speaker_line_refused():
+    from transcript_labeling.formats import parse
+    import pytest
+    with pytest.raises(SystemExit, match="bracket-speakers"):
+        parse("[00:00:01.250] Speaker 1: Hello\nnot a caption\n")

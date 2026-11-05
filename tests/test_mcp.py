@@ -67,6 +67,52 @@ def new(env, dataset="call-1"):
                 create_project=True, speakers=SPEAKERS)
 
 
+def test_new_exposes_reveal_and_config(env):
+    result, bad = call(env, "new", project="demo", dataset="call-1", file=str(ZOOM),
+                       repo=str(env["checkout"]), create_project=True, speakers=SPEAKERS,
+                       reveal="always", config={"unclear": {"id": "unsure", "label": "Unsure", "key": "u"}})
+    assert not bad, result
+    manifest = env["svc"].dataset("demo", "call-1").manifest
+    assert manifest["reveal"] == "always" and manifest["unclear"]["id"] == "unsure"
+
+
+def test_mcp_prepares_original_source_and_updates_suggestions_from_private_files(env):
+    from test_service import contextual_bundle
+    from transcript_labeling.suggestions import suggestion_bundle_hash
+    made, bad = new(env)
+    assert not bad, made
+    ds = env["svc"].dataset("demo", "call-1")
+    original = ds.item("item/notes")
+    speakers = env["tmp"] / "speakers.json"
+    speakers.write_text(json.dumps([{"id": "ann", "description": "Ann Able, candidate"},
+                                    {"id": "bo", "description": "Bo Brand, interviewer"}]))
+    result, bad = call(env, "contextual_prepare", project="demo", dataset="call-1", item="item/notes",
+                       speakers_file=str(speakers))
+    assert not bad, result
+    request_path = Path(result["path"])
+    assert request_path.is_relative_to(env["home"].exports_dir("demo", "call-1"))
+    request = json.loads(request_path.read_text())
+    assert request["source"]["text"] == ZOOM.read_text()
+    assert request["text_sha256"] == original["text_sha256"]
+    assert result["suggestion_bundle_sha256"] == suggestion_bundle_hash(original)
+    assert SECRET_WORD not in json.dumps(result)
+    start, end = original["segments"][0]["body"]
+    bundle = contextual_bundle(original["text"], [
+        {"start": start, "end": end, "speaker": "bo", "source": "contextual_model"}])
+    path = env["tmp"] / "suggestions.json"
+    path.write_text(json.dumps(bundle))
+    installed, bad = call(env, "suggestions_set", project="demo", dataset="call-1", item="item/notes",
+                          repo=str(env["checkout"]), suggestions_file=str(path),
+                          expected_bundle_sha256=result["suggestion_bundle_sha256"])
+    assert not bad and installed["changed"], installed
+    assert ds.item("item/notes")["suggestions"] == bundle["ranges"]
+    assert SECRET_WORD not in json.dumps(installed)
+    refused, bad = call(env, "contextual_prepare", project="demo", dataset="call-1", item="item/notes",
+                        speakers_file=str(speakers), out=str(env["checkout"] / "request.json"))
+    assert bad and "git work tree" in refused["error"]
+    assert not (env["checkout"] / "request.json").exists()
+
+
 def test_a_stdio_round_trip(env):
     proc = subprocess.Popen([sys.executable, "-m", "transcript_labeling.cli", "mcp"], stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=env["tmp"],
@@ -92,7 +138,8 @@ def test_a_stdio_round_trip(env):
         assert init["protocolVersion"] == "2025-03-26" and init["serverInfo"]["name"] == "transcript-labeling"
         send({"jsonrpc": "2.0", "method": "notifications/initialized"})
         names = [t["name"] for t in rpc(2, "tools/list")["result"]["tools"]]
-        assert names == ["new", "items_add", "url", "status", "wait", "export", "verify", "schema", "doctor"]
+        assert names == ["new", "items_add", "suggestions_set", "contextual_prepare", "url", "status", "wait",
+                         "export", "verify", "schema", "doctor"]
         made, bad, raw = tool(3, "new", project="demo", dataset="call-1", file=str(ZOOM),
                               repo=str(env["checkout"]), create_project=True, speakers=SPEAKERS)
         assert not bad and "/login#code=" in made["send_the_owner_this_link"] and SECRET_WORD not in raw
@@ -280,7 +327,7 @@ def test_counts_follow_each_kind(env):
     assert not bad and res["counts"] == {"spans": {"items": 0, "ranges": 0},
                                          "segments": {"items": 1, "captions": res["counts"]["segments"]["captions"]},
                                          "focus": {"passages": 0}, "corrections": {"items": 0, "edits": 0},
-                                         "notes": {"notes": 0}}
+                                         "notes": {"notes": 0}, "suggestions": {"items": 1, "ranges": 0}}
     labels = {"labels": {"a/b": {}}, "partial": ["a/c"], "unlabelled": ["a/d", "a/e"]}
     assert mcp.counts({"kind": "labels", "data": labels}) == {"labels": {"labels": 1, "partial": 1, "unlabelled": 2}}
 

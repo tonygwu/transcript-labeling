@@ -20,7 +20,7 @@ from .tokens import item_kinds, text_hash, tokenize
 
 #: The speaker ids of a version-2 dataset. A version-3 dataset names its own.
 SPEAKERS = {"subject", "other", "unclear"}
-ORIGINS = {"human", "model_confirmed"}
+ORIGINS = {"human", "model_confirmed", "suggestion_confirmed"}
 #: How a quote covered by more than one speaker is answered, and the uncertain id,
 #: in a version-2 dataset.
 V2_MIXED = "both"
@@ -119,6 +119,12 @@ def validate_annotation(value: dict, transcript: dict, speakers=None) -> None:
         raise ValueError("recording key does not match")
     if value.get("text_sha256") != transcript["text_sha256"] or value.get("token_count") != transcript["token_count"]:
         raise ValueError("transcript changed; reload before annotating")
+    def hashes(record):
+        for field in ("suggestions_sha256", "suggestion_bundle_sha256"):
+            if field in record and (not isinstance(record[field], str)
+                                    or not re.fullmatch(r"[0-9a-f]{64}", record[field])):
+                raise ValueError(f"{field} must be a lowercase SHA256 digest when present")
+    hashes(value)
     ranges = value.get("ranges")
     if not isinstance(ranges, list):
         raise ValueError("ranges must be a list")
@@ -126,6 +132,10 @@ def validate_annotation(value: dict, transcript: dict, speakers=None) -> None:
     for span in ranges:
         if not isinstance(span, dict):
             raise ValueError("each range must be an object")
+        hashes(span)
+        if ("suggestion_evidence_scope" in span
+                and span["suggestion_evidence_scope"] not in ("range", "legacy_annotation")):
+            raise ValueError("suggestion_evidence_scope must be range or legacy_annotation")
         a, b = span.get("start"), span.get("end")
         if type(a) is not int or type(b) is not int or not 0 <= a < b <= transcript["token_count"] or a < end:
             raise ValueError("ranges must be ordered, non-overlapping word offsets within the transcript")

@@ -45,16 +45,25 @@ ITEM = {"file": {"type": "string", "description": "absolute path of the transcri
         "name": {"type": "string", "description": "item name (default: the file name made safe)"},
         "group": {"type": "string", "description": "item group; the key is GROUP/NAME (default: item)"},
         "suggest_map": {"type": "string", "description": "'Label=speaker_id,...': file labels become suggestions"},
+        "suggestions_file": {"type": "string", "description": "absolute path of a contextual suggestion envelope JSON"},
         "focus_file": {"type": "string", "description": "absolute path of a JSON file of focus passages"}}
 SPEAKER = {"type": "object", "properties": {"id": STR, "label": STR, "key": STR}, "required": ["id", "label", "key"]}
 
 TOOLS = {
     "new": ("Make a local-only dataset from one transcript file and return the owner's login link.",
             {**REF, **ITEM, "create_project": BOOL, "speakers": {"type": "array", "items": SPEAKER},
-             "modes": {"type": "array", "items": STR}, "title": STR},
+             "modes": {"type": "array", "items": STR}, "title": STR, "config": {"type": "object"},
+             "reveal": {"type": "string", "enum": ["always", "after_answer"]}},
             ["project", "dataset", "file", "repo"]),
     "items_add": ("Add one transcript file to an existing local-only dataset.",
                   {**REF, **ITEM, "upsert": BOOL}, ["project", "dataset", "file", "repo"]),
+    "suggestions_set": ("Replace contextual suggestions only, preserving all human edits and review history.",
+                        {**REF, "repo": ITEM["repo"], "item": STR, "suggestions_file": ITEM["suggestions_file"],
+                         "expected_bundle_sha256": STR},
+                        ["project", "dataset", "repo", "item", "suggestions_file", "expected_bundle_sha256"]),
+    "contextual_prepare": ("Write a contextual model request to a private file from original source only; no model call.",
+                           {**REF, "item": STR, "speakers_file": STR, "out": STR},
+                           ["project", "dataset", "item", "speakers_file"]),
     "url": ("A new one-time login link for the owner (works once, within 7 days).",
             {**REF, "item": STR}, ["project", "dataset"]),
     "status": ("Progress of a dataset: items, ranges, done marks, Finish, commits.", REF, ["project", "dataset"]),
@@ -62,7 +71,7 @@ TOOLS = {
              "says still_waiting.", {**REF, "timeout_s": NUM}, ["project", "dataset"]),
     "export": ("Write an export under $TL_HOME/exports and return its path and counts, never its text.",
                {**REF, "kind": {"type": "string", "enum": ["spans", "segments", "focus", "corrections", "labels",
-                                                         "notes", "all"]},
+                                                         "notes", "suggestions", "all"]},
                 "no_text": BOOL, "fill": {"type": "string", "enum": ["suggestions"]}},
                ["project", "dataset", "kind"]),
     "verify": ("Check a dataset end to end.", {**REF, "expect_answers_sha256": STR}, ["project", "dataset"]),
@@ -117,6 +126,8 @@ def item_spec(args: dict) -> dict:
     spec = {"name": item_name(path, args.get("name")), "text": text, "group": args.get("group", "item")}
     if "suggest_map" in args:
         spec["suggest_map"] = args["suggest_map"]
+    if "suggestions_file" in args:
+        spec["suggestions"] = read_json_file(str(absolute(args, "suggestions_file")))
     if "focus_file" in args:
         spec["focus"] = read_json_file(str(absolute(args, "focus_file")))
     return spec
@@ -130,6 +141,7 @@ COUNTERS = {
     "corrections": lambda d: {"items": len(d), "edits": sum(len(v.get("edits", [])) for v in d.values())},
     "labels": lambda d: {"labels": len(d["labels"]), "partial": len(d["partial"]), "unlabelled": len(d["unlabelled"])},
     "notes": lambda d: {"notes": len(d)},
+    "suggestions": lambda d: {"items": len(d), "ranges": sum(len(v["suggestions"]) for v in d.values())},
 }
 
 
@@ -154,15 +166,44 @@ def call_tool(home: Home, name: str, args: dict) -> dict:
         body = {"project": project, "dataset": dataset, "repo": calling_repo(args),
                 "create_project": args.get("create_project", False), "speakers": args.get("speakers", []),
                 "items": [item_spec(args)], "owner_override": False}
-        for key in ("modes", "title"):
+        for key in ("modes", "title", "config"):
             if key in args:
                 body[key] = args[key]
+        for key in ("speakers", "modes", "title"):
+            if key in args and key in args.get("config", {}) and args[key] != args["config"][key]:
+                raise ToolError(f"{key} and config.{key} disagree")
+        if "reveal" in args:
+            config = dict(body.get("config", {}))
+            if "reveal" in config and config["reveal"] != args["reveal"]:
+                raise ToolError("reveal and config.reveal disagree")
+            body["config"] = {**config, "reveal": args["reveal"]}
         res = client.post("new", body)
         return {"send_the_owner_this_link": res["url"], **{k: v for k, v in res.items() if k != "url"}}
     if name == "items_add":
         return client.post("items", {"project": project, "dataset": dataset, "repo": calling_repo(args),
                                      "upsert": args.get("upsert", False), "items": [item_spec(args)],
                                      "owner_override": False})
+    if name == "suggestions_set":
+        from .cli import read_json_file
+        return client.post("suggestions", {
+            "project": project, "dataset": dataset, "repo": calling_repo(args), "key": args["item"],
+            "suggestions": read_json_file(str(absolute(args, "suggestions_file"))),
+            "expected_bundle_sha256": args["expected_bundle_sha256"], "owner_override": False})
+    if name == "contextual_prepare":
+        from .cli import read_json_file, write_private
+        from .contextual import build_request
+        from .textguard import check_text_target
+        result = client.get("item", project=project, dataset=dataset, key=args["item"])
+        request = build_request(result["item"], read_json_file(str(absolute(args, "speakers_file"))),
+                                unclear=result["config"]["unclear"]["id"])
+        path = (absolute(args, "out") if "out" in args else home.exports_dir(project, dataset)
+                / f"contextual-{args['item'].replace('/', '-')}-request.json")
+        dest = check_text_target(path, False)
+        write_private(dest, json.dumps(request, ensure_ascii=False, allow_nan=False, indent=2) + "\n")
+        return {"path": str(dest), **{field: request[field] for field in
+                ("text_sha256", "token_count", "request_sha256", "prompt_sha256")},
+                "suggestions_sha256": result["item"]["suggestions_sha256"],
+                "suggestion_bundle_sha256": result["suggestion_bundle_sha256"]}
     if name == "url":
         return client.post("url", {"project": project, "dataset": dataset, "item": args.get("item")})
     if name == "status":

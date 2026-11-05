@@ -417,11 +417,16 @@ def transcript_view(ds: Dataset, item: dict, review: dict) -> dict:
     on the server until the owner reveals them for that item.
     """
     revealed = ds.manifest["reveal"] == "always" or item["key"] in review["reveals"]
-    view = {k: v for k, v in item.items() if k != "text"}
+    # Historical drafts are agent-export provenance, never browser review inputs.
+    view = {k: v for k, v in item.items() if k not in ("text", "suggestion_history")}
     view["token_kinds"] = item_kinds(item)
     view["suggestions_hidden"] = 0 if revealed else len(item.get("suggestions", []))
     if not revealed:
         view["suggestions"] = []
+        view.pop("suggestion_provenance", None)
+    else:
+        from .suggestions import suggestion_bundle_hash
+        view["suggestion_bundle_sha256"] = suggestion_bundle_hash(item)
     return view
 
 
@@ -531,8 +536,12 @@ def post_reveal(svc, project, dataset, ds, msg):
         return review
     review, sha, _ = svc.review_store(project, dataset, ds).update_hashed(change, version)
     item = ds.item(key)
+    from .suggestions import suggestion_bundle_hash
     return 200, {"ok": True, "reveal": review["reveals"][key],
-                 "suggestions": item.get("suggestions", [])}, "reveal", key, False, sha
+                 "suggestions": item.get("suggestions", []), "suggestions_sha256": item["suggestions_sha256"],
+                 "suggestion_bundle_sha256": suggestion_bundle_hash(item),
+                 **({"suggestion_provenance": item["suggestion_provenance"]}
+                    if "suggestion_provenance" in item else {})}, "reveal", key, False, sha
 
 
 def post_done(svc, project, dataset, ds, msg):

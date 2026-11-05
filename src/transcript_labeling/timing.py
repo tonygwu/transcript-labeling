@@ -14,7 +14,7 @@ import re
 
 EXCERPT_AT = (0.12, 0.50, 0.85)
 EXCERPT_WORDS = 130
-MARK = re.compile(r"\[(\d{2}):(\d{2}):(\d{2})\]")
+MARK = re.compile(r"\[(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)\]")
 # Seconds of lead before a quote's estimated start. MEASURED 2026-09-28 in
 # verbatim-index on one video (3,187 words, true caption times fetched once):
 # interpolation lands a median 1.4 s from the true time, and with a 5 s lead
@@ -60,8 +60,7 @@ def play_time(toks: list, a: int, duration=None, lead: int = PLAY_LEAD_SECONDS):
             pos = words
         m = MARK.fullmatch(t.group())
         if m:
-            h, mi, s = (int(x) for x in m.groups())
-            marks.append((words, h * 3600 + mi * 60 + s))
+            marks.append((words, clock_seconds(*m.groups())))
         elif t.group() != ">>":
             words += 1
     rates = sorted((c1 - c0) / (s1 - s0) for (c0, s0), (c1, s1) in zip(marks, marks[1:])
@@ -96,12 +95,13 @@ def play_time(toks: list, a: int, duration=None, lead: int = PLAY_LEAD_SECONDS):
     return max(0, int(t) - lead)
 
 
-def clock_seconds(h, m, s) -> int:
-    """Seconds since 00:00:00 for an `hh:mm:ss` clock reading given as its three parts."""
-    return int(h) * 3600 + int(m) * 60 + int(s)
+def clock_seconds(h, m, s) -> int | float:
+    """Seconds since 00:00:00, retaining any source fractional seconds."""
+    seconds = str(s).replace(",", ".")
+    return int(h) * 3600 + int(m) * 60 + (float(seconds) if "." in seconds else int(seconds))
 
 
-def mark_seconds(token: str) -> int | None:
+def mark_seconds(token: str) -> int | float | None:
     """The seconds a `[hh:mm:ss]` mark token records, or None for any other token."""
     mark = MARK.fullmatch(token)
     if not mark:
@@ -109,7 +109,7 @@ def mark_seconds(token: str) -> int | None:
     return clock_seconds(*mark.groups())
 
 
-def mark_times(tokens: list[str]) -> list[list[int]]:
+def mark_times(tokens: list[str]) -> list[list[int | float]]:
     """`[token index, seconds]` for every `[hh:mm:ss]` mark token, in order."""
     return [[i, secs] for i, token in enumerate(tokens) if (secs := mark_seconds(token)) is not None]
 
