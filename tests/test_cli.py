@@ -242,9 +242,10 @@ def test_doctor_fails_when_the_service_refuses_the_token_or_runs_another_version
     tl.home.token_path.write_text("x" * 43 + "\n")  # well formed, but not the token the service holds
     assert tl("doctor") == 1
     assert "answers /healthz but refuses an agent call" in capsys.readouterr().out
+    service_version = cli.__version__
     monkeypatch.setattr(cli, "__version__", "9.9.9")
     assert tl("doctor") == 1
-    assert "the service runs 0.1.0, but 9.9.9 is installed" in capsys.readouterr().out
+    assert f"the service runs {service_version}, but 9.9.9 is installed" in capsys.readouterr().out
 
 
 def test_doctor_reports_a_corrupt_config_and_keeps_going_past_a_broken_dataset(tl, capsys, tmp_path, monkeypatch):

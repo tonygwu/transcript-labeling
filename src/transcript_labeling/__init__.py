@@ -4,4 +4,4 @@ The version is a plain string literal so setuptools can read it without importin
 the package.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
