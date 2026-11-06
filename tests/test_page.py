@@ -633,6 +633,97 @@ confirmDrafts(recording,-1);
                    {"start": 3, "end": 4, "speaker": "bo", "origin": "human"}]
 
 
+def test_accept_turn_confirms_only_its_speech_and_retains_prior_evidence_and_undo():
+    data = fragmented_item()
+    data.update(suggestions_sha256="b" * 64, suggestion_bundle_sha256="c" * 64)
+    got = run_span_logic(f"""
+const writable=true,SPEAKER_IDS=['ann','bo'],HAS=mode=>mode==='speakers';
+const recording={{key:'call/one',quotes:[],excerpts:[]}};
+transcriptCache[recording.key]={json.dumps(data)};
+const prior={{start:0,end:1,speaker:'bo',origin:'model_confirmed',suggestions_sha256:'a'.repeat(64),suggestion_evidence_scope:'range'}};
+spanAnswers[recording.key]={{ranges:[prior]}};
+editsFor=()=>[];
+let saved;
+saveRanges=(r,ranges)=>{{saved=ranges;}};
+acceptTurn(recording,-1,7,21,'ann','contextual_model');
+console.log(JSON.stringify({{saved,undo:spanUndo[recording.key]}}));
+""")
+    prior = {"start": 0, "end": 1, "speaker": "bo", "origin": "model_confirmed",
+             "suggestions_sha256": "a" * 64, "suggestion_evidence_scope": "range"}
+    evidence = {"suggestions_sha256": "b" * 64, "suggestion_bundle_sha256": "c" * 64,
+                "suggestion_evidence_scope": "range"}
+    assert got["saved"] == [prior] + [
+        {"start": start, "end": end, "speaker": "ann", "origin": "model_confirmed", **evidence}
+        for start, end in [(7, 8), (13, 15), (20, 21)]
+    ]
+    assert got["undo"] == [[prior]]
+
+
+def test_accept_turn_respects_window_and_correction_anchors():
+    data = fragmented_item()
+    data["suggestions"][-1]["source"] = "segment_label"
+    got = run_span_logic(f"""
+const writable=true,SPEAKER_IDS=['ann','bo'],HAS=()=>true;
+const recording={{key:'call/one',quotes:[],excerpts:[{{start:21,end:23}}]}};
+transcriptCache[recording.key]={json.dumps(data)};
+editsFor=()=>[{{start:21,end:24,original:'How are you?',replacement:'How have you been?'}}];
+let saved;
+saveRanges=(r,ranges)=>{{saved=ranges;}};
+acceptTurn(recording,-1,21,24,'bo','segment_label');
+console.log(JSON.stringify(saved));
+""")
+    # The displayed correction includes all its original anchors, even at a passage edge.
+    assert got == [{"start": 21, "end": 24, "speaker": "bo", "origin": "suggestion_confirmed"}]
+
+
+def test_accept_turn_does_not_accept_an_outdated_block_or_read_only_view():
+    data = fragmented_item()
+    got = run_span_logic(f"""
+let writable=true;
+const SPEAKER_IDS=['ann','bo'],HAS=()=>true;
+const recording={{key:'call/one',quotes:[],excerpts:[]}};
+transcriptCache[recording.key]={json.dumps(data)};
+spanAnswers[recording.key]={{ranges:[{{start:13,end:14,speaker:'bo',origin:'human'}}]}};
+editsFor=()=>[];
+let saves=0;
+saveRanges=()=>{{saves++;}};
+acceptTurn(recording,-1,7,21,'ann','contextual_model');
+acceptTurn(recording,-1,21,24,'ann','contextual_model');
+acceptTurn(recording,-1,21,24,'bo','segment_label');
+writable=false;
+acceptTurn(recording,-1,21,24,'bo','contextual_model');
+console.log(JSON.stringify({{saves,undo:spanUndo[recording.key]||[]}}));
+""")
+    assert got == {"saves": 0, "undo": []}
+
+
+def test_accept_buttons_only_offer_known_unreviewed_speakers_in_speaker_mode():
+    got = run_span_logic("""
+let writable=true, speakerMode=true;
+const SPEAKER_IDS=['ann','bo'],HAS=()=>speakerMode,esc=s=>s,speakerLabel=s=>s,speakerClass=s=>s;
+const recording={key:'call/one',quotes:[]};
+const data={tokens:['Yes.','No.','Maybe.','Mixed.','Missing.','Reviewed.'],token_kinds:Array(6).fill('speech'),suggestions:[
+ {start:0,end:1,speaker:'ann'}, {start:1,end:2,speaker:'bo'}, {start:2,end:3,speaker:'unclear'},
+ {start:3,end:4,speaker:'ann'}, {start:3,end:4,speaker:'bo'}, {start:5,end:6,speaker:'ann'}]};
+const states=draftStates(data).map(s=>({...s}));
+states[5]={speaker:'ann',draft:false,source:'human'};
+const render=()=>conversationMarkup(data,states,[],0,6,recording,null);
+const offered=render();
+writable=false;
+const readOnly=render();
+speakerMode=false;
+console.log(JSON.stringify({offered,readOnly,captionsOnly:render()}));
+""")
+    offered = re.findall(r"<button[^>]*data-accept-turn[^>]*>", got["offered"])
+    assert len(offered) == 2
+    assert all('disabled' not in button for button in offered)
+    assert 'aria-label="Accept ann suggestion"' in offered[0]
+    assert 'aria-label="Accept bo suggestion"' in offered[1]
+    read_only = re.findall(r"<button[^>]*data-accept-turn[^>]*>", got["readOnly"])
+    assert len(read_only) == 2 and all('disabled' in button for button in read_only)
+    assert 'data-accept-turn' not in got["captionsOnly"]
+
+
 def test_source_headers_keep_fractional_timestamps_without_inventing_an_end():
     got = run_span_logic("""
 const esc=s=>s;

@@ -133,7 +133,8 @@ function conversationMarkup(data,states,edits,lo,hi,recording,quote){
  return transcriptTurns(data,states,edits,lo,hi).map(part=>{
   if(part.kind!=="turn"||!part.units)return markerMarkup(part);
   const label=part.state.speaker==="unknown"?"Unassigned":part.state.speaker==="conflict"?"Mixed attribution":speakerLabel(part.state.speaker,recording);
-  return `<section class="conversation-turn"><div class="turn-heading"><button type="button" class="turn-speaker" data-seg="${part.start},${part.end}" title="Select this turn">${esc(label)}</button><span>${esc(attributionDescription(part.state))}</span></div>
+  const accept=HAS("speakers")&&part.state.draft&&SPEAKER_IDS.includes(part.state.speaker);
+  return `<section class="conversation-turn"><div class="turn-heading"><button type="button" class="turn-speaker" data-seg="${part.start},${part.end}" title="Select this turn">${esc(label)}</button><span>${esc(attributionDescription(part.state))}</span>${accept?`<button type="button" class="opt turn-accept" data-accept-turn="${part.start},${part.end}" data-speaker="${esc(part.state.speaker)}" data-source="${esc(part.state.source)}" aria-label="Accept ${esc(label)} suggestion" ${writable?"":"disabled"}>Accept</button>`:""}</div>
    <div class="turn-words">${part.units.map(u=>u.kind==="speech"?wordMarkup(u,recording,quote):markerMarkup(u)).join("")}</div>
    ${part.segments.length?`<details class="turn-source"><summary>${part.segments.length} original caption${part.segments.length===1?"":"s"}</summary><p>Original caption times and labels. A caption may contain more than one speaker.</p>${part.segments.map(seg=>`<button type="button" class="seg-head" data-seg="${seg.body[0]},${seg.body[1]}" title="Select this original caption">${sourceHeader(data,seg)}</button>`).join("")}</details>`:""}</section>`;
  }).join("");
@@ -199,6 +200,31 @@ function markSelection(recording,index,speaker){
  delete spanEditing[id];
  saveRanges(recording,paintRanges(ranges,selection[0],selection[1],speaker));
 }
+function confirmedRange(ranges,data,start,end,label){
+ const evidence={};
+ for(const field of ["suggestions_sha256","suggestion_bundle_sha256"])
+  if(data[field]!==undefined)evidence[field]=data[field];
+ if(Object.keys(evidence).length)evidence.suggestion_evidence_scope="range";
+ return paintRanges(ranges,start,end,label.speaker,label.source==="contextual_model"?"model_confirmed":"suggestion_confirmed",evidence);
+}
+function acceptTurn(recording,index,start,end,speaker,source){
+ if(!writable||!HAS("speakers"))return;
+ const data=transcriptCache[recording.key],[lo,hi]=spanWindow(recording,index);
+ // Resolve the displayed block again so an older button cannot overwrite a new human mark.
+ const turn=transcriptTurns(data,statesFor(recording),editsFor(recording),lo,hi).find(part=>
+  part.units&&part.start===start&&part.end===end&&part.state.speaker===speaker&&part.state.source===source);
+ if(!turn||!turn.state.draft||!SPEAKER_IDS.includes(speaker))return;
+ // Caption headers can lie between grouped words. Confirm only the displayed speech,
+ // retaining the original anchors when a corrected phrase has a different word count.
+ const words=turn.units.flatMap(unit=>unit.kind==="speech"?speechIndices(data,unit.start,unit.end):[]);
+ let ranges=humanRanges(recording);
+ rememberRanges(recording);
+ for(let i=0;i<words.length;){
+  let j=i+1;while(j<words.length&&words[j]===words[j-1]+1)j++;
+  ranges=confirmedRange(ranges,data,words[i],words[j-1]+1,turn.state);i=j;
+ }
+ saveRanges(recording,ranges);
+}
 function confirmDrafts(recording,index){
  if(!writable)return;
  const [start,end]=spanWindow(recording,index), states=statesFor(recording);let ranges=humanRanges(recording);
@@ -206,11 +232,7 @@ function confirmDrafts(recording,index){
  for(let i=start;i<end;){const label=states[i];let j=i+1;
   while(j<end&&sameAttribution(states[j],label))j++;
   if(label.draft&&SPEAKER_IDS.includes(label.speaker)){
-   const data=transcriptCache[recording.key],evidence={};
-   for(const field of ["suggestions_sha256","suggestion_bundle_sha256"])
-    if(data[field]!==undefined)evidence[field]=data[field];
-   if(Object.keys(evidence).length)evidence.suggestion_evidence_scope="range";
-   ranges=paintRanges(ranges,i,j,label.speaker,label.source==="contextual_model"?"model_confirmed":"suggestion_confirmed",evidence);
+   ranges=confirmedRange(ranges,transcriptCache[recording.key],i,j,label);
   }
   i=j;
  }
@@ -331,6 +353,10 @@ function drawSpanEditor(recording,index){
  const expand=root.querySelector("[data-expand]");
  if(expand)expand.onclick=()=>{spanFull[id]=!spanFull[id];delete spanSelections[id];delete spanEditing[id];drawSpanEditor(recording,index);};
  root.querySelectorAll("[data-transcript-view]").forEach(button=>button.onclick=()=>{spanSourceView[id]=button.dataset.transcriptView==="source";drawSpanEditor(recording,index);});
+ root.querySelectorAll("[data-accept-turn]").forEach(button=>button.onclick=()=>{
+  const [start,end]=button.dataset.acceptTurn.split(",").map(Number);
+  acceptTurn(recording,index,start,end,button.dataset.speaker,button.dataset.source);
+ });
  root.querySelectorAll("[data-seg]").forEach(head=>head.onclick=()=>{
   const [a,b]=head.dataset.seg.split(",").map(Number);if(b<=a)return;
   spanSelections[id]=correctionBounds(recording,a,b);delete spanEditing[id];spanLast=id;spanToolbar(recording,index);
