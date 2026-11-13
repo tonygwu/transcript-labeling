@@ -70,6 +70,26 @@ detected when absent), `row` (catalog fields such as `title` and `person`),
 name; its `format` is always the parser's). `GET schema?name=item` lists every
 field.
 
+### Text correction
+
+Speaker and caption reviews include text correction by default, including
+`modes: ["speakers"]`. This also applies to existing service-managed reviews.
+The stored `modes` list and answers are not rewritten. When text correction is
+enabled, the service includes `captions` in the session modes and permits
+correction answers.
+
+Optional `config.text_corrections` must be a JSON boolean. `false` disables
+text correction even if stored modes include `captions`; `true` enables it,
+including for a checklist-only task. Without the setting, checklist-only tasks
+keep text correction disabled. Strings, numbers and `null` are refused.
+Disabling text correction is also refused if no task would remain, as with
+`modes: ["captions"]` and `text_corrections: false`.
+
+Use `tl new --no-text-corrections` to opt out or `--text-corrections` to enable
+it explicitly. MCP `new` accepts the boolean directly as `text_corrections` or
+inside `config`; if both are supplied, they must agree. This setting controls
+text editing independently of contextual, manual or blind speaker review.
+
 ### Review modes and readiness
 
 `POST new` chooses `config.review_mode: "contextual"` when the dataset includes
@@ -89,8 +109,8 @@ If the caller omits `review_mode` but explicitly requests `reveal: "after_answer
 `new` selects blind mode for compatibility. Caption or checklist tasks without
 speaker review default to manual mode. Incompatible contextual or blind reveal
 policies are refused. Existing datasets and the low-level `POST datasets`
-operation retain their earlier behavior when `review_mode` is absent; there is
-no automatic migration.
+operation retain their earlier speaker suggestion and reveal policies when
+`review_mode` is absent; there is no automatic migration to contextual review.
 
 Contextual readiness requires source-aligned suggestions with contextual
 provenance. Imported tags from `suggest_map` do not satisfy it. Every speech
@@ -246,6 +266,7 @@ tl new P/D --from-file PATH [--create-project] [--speakers "id=Label:key,..."] [
            [--focus FILE] [--modes speakers,captions] [--name N] [--group G]
            [--config FILE] [--review-mode contextual|manual|blind]
            [--reveal always|after_answer] [--suggestions FILE]
+           [--text-corrections | --no-text-corrections]
 tl project create NAME --git-checkout ABS_PATH [--writer REPO ...] [--branch B]
 tl project list | tl dataset list
 tl dataset create P/D --config FILE [--path REL]
@@ -286,8 +307,10 @@ caller's own checkout. `wait` returns `still_waiting` after at most 50 seconds;
 call it again. `export` writes under `$TL_HOME/exports/` and returns the path,
 size and counts, never the text. MCP calls cannot write git-private projects.
 
-`new` accepts `config`, `review_mode: "contextual" | "manual" | "blind"`, and
-`reveal: "always" | "after_answer"`. If a direct argument and `config` both
+`new` accepts `config`, `review_mode: "contextual" | "manual" | "blind"`,
+`reveal: "always" | "after_answer"`, and boolean `text_corrections`.
+Text correction is enabled by default for speaker and caption reviews, even
+when `modes` lists only `speakers`. If a direct argument and `config` both
 specify a setting, they must agree. Speaker reviews default to contextual
 mode. Until ready, the response contains no `send_the_owner_this_link` field.
 Do not ask the owner to start labeling a staged correction review.

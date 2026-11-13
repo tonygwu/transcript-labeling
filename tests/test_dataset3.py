@@ -27,6 +27,66 @@ def test_defaults_are_filled_in():
                             "review": "review.json"}
 
 
+@pytest.mark.parametrize("modes", [["speakers"], ["speakers", "captions"]])
+def test_speaker_review_defaults_to_text_correction_without_rewriting_manifest(tmp_path, modes):
+    ds = Dataset.create(tmp_path / "d", "demo", "call-1", {"speakers": SPEAKERS, "modes": modes})
+    manifest_path = ds.root / "manifest.json"
+    before = manifest_path.read_bytes()
+    reopened = Dataset.open(ds.root)
+    assert reopened.modes == ["speakers", "captions"]
+    assert reopened.sections() == {"spans", "corrections"}
+    assert reopened.session_block()["modes"] == ["speakers", "captions"]
+    assert reopened.manifest["modes"] == modes
+    assert manifest_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("stored", [["speakers"], ["speakers", "captions"]])
+@pytest.mark.parametrize("enabled", [True, False])
+def test_explicit_text_correction_setting_controls_effective_modes_without_rewriting(tmp_path, stored, enabled):
+    config = {"speakers": SPEAKERS, "modes": stored, "text_corrections": enabled}
+    ds = Dataset.create(tmp_path / "d", "demo", "call-1", config)
+    before = (ds.root / "manifest.json").read_bytes()
+    reopened = Dataset.open(ds.root)
+    expected = ["speakers", "captions"] if enabled else ["speakers"]
+    assert reopened.modes == expected
+    assert reopened.session_block()["modes"] == expected
+    assert reopened.sections() == ({"spans", "corrections"} if enabled else {"spans"})
+    assert reopened.manifest["modes"] == stored and reopened.manifest["text_corrections"] is enabled
+    assert (ds.root / "manifest.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("setting,expected", [({}, ["checklist"]), ({"text_corrections": False}, ["checklist"]),
+                                            ({"text_corrections": True}, ["checklist", "captions"])])
+def test_checklist_only_keeps_its_default_and_can_explicitly_enable_text_correction(tmp_path, setting, expected):
+    ds = Dataset.create(tmp_path / "d", "demo", "call-1", {
+        "modes": ["checklist"], "checklist": _checklist("y"), **setting})
+    assert ds.modes == expected and ds.session_block()["modes"] == expected
+    assert ds.sections() == ({"labels", "corrections"} if "captions" in expected else {"labels"})
+    assert ds.manifest["modes"] == ["checklist"]
+
+
+def test_text_correction_setting_is_optional_and_cannot_mutate_stored_modes(tmp_path):
+    config = normalize_config({"speakers": SPEAKERS, "modes": ["speakers"]})
+    assert "text_corrections" not in config and config["modes"] == ["speakers"]
+    ds = Dataset.create(tmp_path / "d", "demo", "call-1", config)
+    assert "text_corrections" not in ds.manifest and manifest_errors(ds.manifest) == []
+    effective = ds.modes
+    effective.remove("speakers")
+    assert ds.manifest["modes"] == ["speakers"] and ds.modes == ["speakers", "captions"]
+
+
+@pytest.mark.parametrize("value", [None, "true", "false", 0, 1, [], {}])
+def test_text_correction_setting_requires_a_boolean(value):
+    with pytest.raises(SystemExit, match="text_corrections must be a boolean"):
+        normalize_config({"speakers": SPEAKERS, "text_corrections": value})
+
+
+def test_captions_only_cannot_disable_its_only_task():
+    with pytest.raises(SystemExit, match="text_corrections.*no.*mode"):
+        normalize_config({"modes": ["captions"], "text_corrections": False})
+    assert normalize_config({"modes": ["captions"], "text_corrections": True})["modes"] == ["captions"]
+
+
 def test_review_mode_normalizes_visibility_and_remains_optional_for_legacy_manifests(tmp_path):
     assert "review_mode" not in normalize_config({"speakers": SPEAKERS})
     for mode, reveal in (("contextual", "always"), ("blind", "after_answer"), ("manual", "always")):

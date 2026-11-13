@@ -277,10 +277,10 @@ def cmd_new(args, home: Home) -> int:
     config = read_json_file(args.config) if args.config else {}
     if not isinstance(config, dict):
         raise SystemExit("REFUSING: --config must contain a dataset configuration object")
-    for key in ("reveal", "review_mode"):
+    for key in ("reveal", "review_mode", "text_corrections"):
         value = getattr(args, key)
         if value is not None:
-            if key in config and config[key] != value:
+            if key in config and (type(config[key]) is not type(value) or config[key] != value):
                 raise SystemExit(f"REFUSING: --{key.replace('_', '-')} and config.{key} disagree")
             config[key] = value
     modes = ([m.strip() for m in args.modes.split(",") if m.strip()] if args.modes
@@ -442,7 +442,9 @@ def build_parser() -> argparse.ArgumentParser:
     writer(p)
     p.add_argument("--create-project", action="store_true", help="make the project if it does not exist")
     p.add_argument("--speakers", help="'id=Label:key,...'")
-    p.add_argument("--modes", help="comma-separated modes (default: speakers,captions)")
+    p.add_argument("--modes", help="comma-separated modes (default: speakers,captions); speakers also enables text correction")
+    p.add_argument("--text-corrections", action=argparse.BooleanOptionalAction, default=None,
+                   help="enable text correction; on by default for speakers/captions; --no-text-corrections opts out")
     p.add_argument("--title")
     p.add_argument("--config", help="dataset configuration JSON, including review policy")
     p.add_argument("--reveal", choices=("after_answer", "always"), help="when suggestions become visible")

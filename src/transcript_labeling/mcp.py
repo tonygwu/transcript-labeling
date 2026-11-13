@@ -45,6 +45,8 @@ INSTRUCTIONS = (
     "it is ready call url and send the owner the link. If setup, inference or validation fails, report the "
     "failure and keep the review staged; never hand over a blank correction review or silently switch modes. "
     "Use review_mode manual or blind only when intentional; blind hides suggestions until the owner answers. "
+    "Text correction is enabled by default for speaker reviews, including modes ['speakers']; "
+    "set text_corrections false only for an intentional opt-out. "
     "suggest_map only maps source tags and does not perform contextual inference. After handoff: wait or "
     "status, export, verify. Transcripts, requests, responses and exports stay outside every Git checkout; "
     "tools return private paths, not text. Unmarked words are unknown; suggestions are never confirmed labels.")
@@ -64,6 +66,8 @@ TOOLS = {
     "new": ("Stage a local-only correction review. Default speaker reviews need contextual suggestions before a link is returned.",
             {**REF, **ITEM, "create_project": BOOL, "speakers": {"type": "array", "items": SPEAKER},
              "modes": {"type": "array", "items": STR}, "title": STR, "config": {"type": "object"},
+             "text_corrections": {"type": "boolean", "description":
+                                  "enabled by default for speakers/captions; false explicitly opts out"},
              "review_mode": {"type": "string", "enum": ["contextual", "manual", "blind"],
                              "description": "contextual by default for speakers; manual/blind only when intentional"},
              "reveal": {"type": "string", "enum": ["always", "after_answer"]}},
@@ -189,10 +193,10 @@ def call_tool(home: Home, name: str, args: dict) -> dict:
         for key in ("speakers", "modes", "title"):
             if key in args and key in args.get("config", {}) and args[key] != args["config"][key]:
                 raise ToolError(f"{key} and config.{key} disagree")
-        for key in ("reveal", "review_mode"):
+        for key in ("reveal", "review_mode", "text_corrections"):
             if key in args:
                 config = dict(body.get("config", {}))
-                if key in config and config[key] != args[key]:
+                if key in config and (type(config[key]) is not type(args[key]) or config[key] != args[key]):
                     raise ToolError(f"{key} and config.{key} disagree")
                 body["config"] = {**config, key: args[key]}
         res = client.post("new", body)

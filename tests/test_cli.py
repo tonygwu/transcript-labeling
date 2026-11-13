@@ -114,6 +114,27 @@ def test_new_explicit_review_modes_keep_intentional_blank_reviews(tl, capsys, mo
     assert tl.svc.dataset("demo", "call-1").manifest["reveal"] == reveal
 
 
+@pytest.mark.parametrize("disabled", [False, True])
+def test_speaker_only_cli_defaults_to_correction_with_explicit_opt_out(tl, disabled):
+    flags = ["--no-text-corrections"] if disabled else []
+    assert tl("new", "demo/call-1", "--from-file", str(ZOOM), "--create-project", "--repo", "me/repo",
+              *SPEAKERS, "--modes", "speakers", "--review-mode", "manual", *flags) == 0
+    ds = tl.svc.dataset("demo", "call-1")
+    assert ("captions" in ds.modes) is not disabled
+    assert ("corrections" in ds.sections()) is not disabled
+
+
+@pytest.mark.parametrize("value", [0, 1, 0.0, 1.0])
+def test_cli_rejects_numeric_text_correction_config_even_with_boolean_flag(tl, tmp_path, value):
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"text_corrections": value}))
+    flag = "--text-corrections" if value else "--no-text-corrections"
+    result = tl("new", "demo/call-1", "--from-file", str(ZOOM), "--create-project", "--repo", "me/repo",
+                *SPEAKERS, "--config", str(config), flag)
+    assert "text-corrections and config.text_corrections disagree" in str(result)
+    assert "demo" not in tl.svc.registry.load()["projects"]
+
+
 def test_a_write_names_the_calling_repository(tl, capsys, tmp_path):
     code = tl("new", "demo/call-1", "--from-file", str(ZOOM), "--create-project", *SPEAKERS)
     assert "must name the calling repository" in str(code)

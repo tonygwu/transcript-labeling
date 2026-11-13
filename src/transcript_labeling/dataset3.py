@@ -45,11 +45,33 @@ DEFAULT_UNCLEAR = {"id": "unclear", "label": "Unsure", "key": "u"}
 REVEAL = ("after_answer", "always")
 REVIEW_MODES = ("contextual", "manual", "blind")
 CONFIG_KEYS = {"title", "modes", "speakers", "unclear", "mixed_answer", "label_template", "checklist", "reveal",
-               "media", "project_help", "files", "tags", "review_mode"}
+               "media", "project_help", "files", "tags", "review_mode", "text_corrections"}
 
 
 #: The settings `normalize_config` always returns, so every manifest `tl` writes holds them.
-WRITTEN_KEYS = CONFIG_KEYS - {"tags", "review_mode"}
+WRITTEN_KEYS = CONFIG_KEYS - {"tags", "review_mode", "text_corrections"}
+
+
+def effective_modes(config: dict) -> list[str]:
+    """Available tasks without rewriting the stored modes of existing datasets.
+
+    Speaker reviews include text correction unless explicitly disabled. A
+    checklist-only task keeps its current behavior unless correction is enabled.
+    """
+    modes = list(config["modes"])
+    if "text_corrections" in config:
+        enabled = config["text_corrections"]
+        if type(enabled) is not bool:
+            raise SystemExit("REFUSING: text_corrections must be a boolean")
+    else:
+        enabled = "speakers" in modes or "captions" in modes
+    if enabled and "captions" not in modes:
+        modes.append("captions")
+    elif not enabled:
+        modes = [mode for mode in modes if mode != "captions"]
+    if not modes:
+        raise SystemExit("REFUSING: text_corrections false leaves no enabled mode")
+    return modes
 
 
 def normalize_config(config: dict) -> dict:
@@ -63,6 +85,7 @@ def normalize_config(config: dict) -> dict:
     if (not isinstance(modes, list) or not modes or not all(isinstance(m, str) for m in modes)
             or set(modes) - set(MODES) or len(set(modes)) != len(modes)):
         raise SystemExit(f"REFUSING: modes {modes!r} must be a non-empty subset of {list(MODES)}")
+    effective_modes({**config, "modes": modes})  # validate the setting without changing stored modes
     speakers = config.get("speakers", [])
     if not isinstance(speakers, list):
         raise SystemExit(f"REFUSING: speakers must be a list of {{id, label, key}}, got {speakers!r}")
@@ -101,6 +124,8 @@ def normalize_config(config: dict) -> dict:
     if checklist:
         checklist_errors(checklist, RESERVED_KEYS | set(keys))
     policy = {}
+    if "text_corrections" in config:
+        policy["text_corrections"] = config["text_corrections"]
     required_reveal = None
     if "review_mode" in config:
         mode = config["review_mode"]
@@ -295,7 +320,7 @@ class Dataset:
 
     @property
     def modes(self) -> list[str]:
-        return self.manifest["modes"]
+        return effective_modes(self.manifest)
 
     def file(self, role: str) -> Path:
         return self.root / self.manifest["files"][role]
@@ -358,7 +383,7 @@ class Dataset:
         m = self.manifest
         tags = m.get("tags") or [m["project"]]
         return {"name": m["name"], "project": m["project"], "title": m["title"] or m["name"], "projects": tags,
-                "modes": m["modes"], "checklist": m["checklist"] if "checklist" in m["modes"] else None,
+                "modes": self.modes, "checklist": m["checklist"] if "checklist" in self.modes else None,
                 "project_help": {t: m["project_help"].get(t, "") for t in tags}, "speakers": m["speakers"],
                 "unclear": m["unclear"], "mixed_answer": m["mixed_answer"], "label_template": m["label_template"],
                 "reveal": m["reveal"], "media": m["media"]}

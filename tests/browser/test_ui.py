@@ -291,6 +291,22 @@ def test_the_zoom_flow(svc, browser, shots, scheme):
     ctx2.close()
 
 
+def test_explicit_text_correction_opt_out_keeps_speaker_labeling(svc, browser, shots):
+    url = new_dataset(svc, "speaker-only", [{"name": "one", "text": "Hello there."}],
+                      config={"review_mode": "manual", "text_corrections": False})
+    ctx, page, errors, failed = open_page(browser, "light")
+    login(page, url)
+    open_item(page, "item/one")
+    assert page.locator("[data-correct-text]").count() == 0
+    drag_words(page, 0, 1)
+    paint(page, "ann")
+    wait_for(page, lambda: spans_of(svc, "speaker-only", "item/one"), "speaker labels to save")
+    assert [(r["start"], r["end"], r["speaker"]) for r in spans_of(svc, "speaker-only", "item/one")] == [(0, 2, "ann")]
+    page.screenshot(path=shots / "18-text-correction-disabled-light.png", full_page=True)
+    assert errors == [] and failed == [], (errors, failed)
+    ctx.close()
+
+
 @THEMES
 def test_fragmented_conversation_preserves_words_sources_and_human_edits(svc, browser, shots, scheme):
     text = ("Review notes: Keep every filler.\n\n"
@@ -300,6 +316,7 @@ def test_fragmented_conversation_preserves_words_sources_and_human_edits(svc, br
             "00:00:05 --> 00:00:06\nUnknown: Hard to hear.\n\n"
             "00:00:06 --> 00:00:08\nSpeaker 2: Fine, thanks.\n")
     url = new_dataset(svc, "fragments", [{"name": "one", "text": text, "group": "call"}],
+                      modes=["speakers"],
                       speakers=[{"id": "ann", "label": "Me", "key": "1"},
                                 {"id": "bo", "label": "Interviewer", "key": "2"}],
                       config={"reveal": "always", "review_mode": "manual"})
@@ -316,6 +333,7 @@ def test_fragmented_conversation_preserves_words_sources_and_human_edits(svc, br
     ctx, page, errors, failed = open_page(browser, scheme)
     login(page, url)
     open_item(page, key)
+    assert page.get_by_role("button", name="Correct text", exact=True).is_visible()
     turns = page.locator(".conversation-turn")
     assert turns.count() == 4
     assert turns.nth(0).locator(".turn-words").inner_text() == "Hi, um, good to meet you. Thanks."

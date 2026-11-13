@@ -33,6 +33,12 @@ transcript, suggestions and your corrections together, with one link for you.
 
 Each answer saves the moment you make it.
 
+Text correction is enabled by default for speaker and caption reviews, even
+with `--modes speakers`. Existing service-managed speaker reviews gain the
+same controls without rewriting their saved modes or answers. If the task
+intentionally excludes text correction, use `--no-text-corrections` with
+`tl new`, or set `text_corrections: false` in its config or MCP arguments.
+
 New speaker reviews default to contextual correction work. The agent uses the
 whole conversation and descriptions of the speakers' identities and roles to
 produce suggestions. The service releases a login link only after contextual
@@ -52,7 +58,8 @@ Your other markings stay as they are, and **Undo marking** reverses the acceptan
 For intentional manual labeling, choose `--review-mode manual`; suggestions are
 optional. For blind review, choose `--review-mode blind`; the page hides
 suggestions until you mark at least one range and ask to see them. It records
-which marks preceded the reveal. Existing datasets keep their current behavior.
+which marks preceded the reveal. Existing datasets keep their current speaker
+suggestion and reveal policies.
 
 ## How it works
 

@@ -195,6 +195,44 @@ def test_corrupt_contextual_evidence_cannot_mint_a_link(tmp_path):
         assert status == 409 and "url" not in result and "served_model" in result["error"], result
 
 
+@pytest.mark.parametrize("text_corrections", [None, True, False])
+def test_speaker_only_review_corrects_text_unless_explicitly_disabled(tmp_path, text_corrections):
+    with running(tmp_path) as c:
+        config = {"review_mode": "manual"}
+        if text_corrections is not None:
+            config["text_corrections"] = text_corrections
+        status, made = new_dataset(c, modes=["speakers"], config=config,
+                                  items=[{"name": "one", "text": "Hello there."}])
+        assert status == 200, made
+        login(c, made["url"])
+        ds = c.svc.dataset("demo", "call-1")
+        item = ds.item("item/one")
+        original_files = {p: p.read_bytes() for p in (ds.root / "manifest.json", ds.item_path("item/one"))}
+        status, page = c.json("GET", "/p/demo/call-1/api/page")
+        assert status == 200
+        enabled = text_corrections is not False
+        assert ("captions" in page["session"]["modes"]) is enabled
+        common = {"key": "item/one", "text_sha256": item["text_sha256"], "token_count": item["token_count"]}
+        value = {**common, "ranges": [{"start": 0, "end": 2, "speaker": "ann", "origin": "human"}]}
+        assert c.json("POST", "/p/demo/call-1/api/answer", {
+            "kind": "spans", "id": "item/one", "value": value, "versions": versions(c)})[0] == 200
+        human_spans = c.svc.answers_store("demo", "call-1", ds).load()["spans"]
+        status, result = c.json("POST", "/p/demo/call-1/api/answer", {
+            "kind": "corrections", "id": "item/one", "versions": versions(c),
+            "value": {**common, "revision": 0, "edits": [
+                {"start": 0, "end": 1, "original": "Hello", "replacement": "Greetings"}]}})
+        assert status == (200 if enabled else 400), result
+        status, exported = c.json("GET", "/api/v1/export?project=demo&dataset=call-1&kind=all", bearer=True)
+        assert status == 200, exported
+        assert ("corrections" in exported) is enabled
+        if enabled:
+            assert exported["corrections"]["item/one"]["corrected_text"] == "Greetings there."
+        else:
+            assert "do not write corrections" in result["error"]
+        assert c.svc.answers_store("demo", "call-1", ds).load()["spans"] == human_spans
+        assert {p: p.read_bytes() for p in original_files} == original_files
+
+
 def login(c, url):
     code = url.split("#code=")[1]
     status, body = c.json("POST", "/api/login", {"code": code})

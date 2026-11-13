@@ -151,6 +151,33 @@ def test_resolve_refuses_bad_results_without_installing_or_handing_off(env, fail
     assert bad and "contextual" in blocked["error"]
 
 
+@pytest.mark.parametrize("disabled", [False, True])
+def test_mcp_speaker_only_review_defaults_to_correction_with_explicit_opt_out(env, disabled):
+    args = {"text_corrections": False} if disabled else {}
+    made, bad = call(env, "new", project="demo", dataset="call-1", file=str(ZOOM),
+                     repo=str(env["checkout"]), create_project=True, speakers=SPEAKERS,
+                     modes=["speakers"], review_mode="manual", **args)
+    assert not bad, made
+    assert ("captions" in env["svc"].dataset("demo", "call-1").session_block()["modes"]) is not disabled
+
+
+def test_mcp_refuses_conflicting_text_correction_settings(env):
+    result, bad = call(env, "new", project="demo", dataset="call-1", file=str(ZOOM),
+                       repo=str(env["checkout"]), create_project=True, speakers=SPEAKERS,
+                       text_corrections=False, config={"text_corrections": True})
+    assert bad and "text_corrections and config.text_corrections disagree" in result["error"]
+    assert "demo" not in env["svc"].registry.load()["projects"]
+
+
+@pytest.mark.parametrize("value", [0, 1, 0.0, 1.0])
+def test_mcp_rejects_numeric_text_correction_config_even_with_boolean_argument(env, value):
+    result, bad = call(env, "new", project="demo", dataset="call-1", file=str(ZOOM),
+                       repo=str(env["checkout"]), create_project=True, speakers=SPEAKERS,
+                       text_corrections=bool(value), config={"text_corrections": value})
+    assert bad and "text_corrections and config.text_corrections disagree" in result["error"]
+    assert "demo" not in env["svc"].registry.load()["projects"]
+
+
 def test_new_exposes_reveal_and_config(env):
     result, bad = call(env, "new", project="demo", dataset="call-1", file=str(ZOOM),
                        repo=str(env["checkout"]), create_project=True, speakers=SPEAKERS,

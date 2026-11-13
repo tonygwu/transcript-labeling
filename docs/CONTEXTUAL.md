@@ -259,6 +259,13 @@ Source captions view. Speaker changes inside a caption retain that caption's
 original interval. Missing end times remain missing. A turn boundary never
 creates a new timestamp. Caption corrections remain separately recorded.
 
+Text correction is enabled by default for these reviews, even when `modes`
+contains only `speakers`. Existing service-managed speaker reviews gain the
+controls without changing their stored modes or answers. If the task
+intentionally excludes text editing, use `tl new --no-text-corrections` or
+`text_corrections: false` in config or MCP `new`. This choice does not change
+speaker suggestions, readiness or reveal behavior.
+
 Imported tags, contextual guesses and human reviews are labeled separately.
 Confirming a contextual guess saves `model_confirmed`; confirming an imported
 or generic suggestion saves `suggestion_confirmed`; manual marks save `human`.
@@ -275,8 +282,9 @@ provenance that could contain it.
 
 Existing datasets retain their stored reveal policy and human state. They are
 not migrated to contextual mode. Low-level dataset creation without a
-`review_mode` also retains its earlier behavior. New datasets created through
-`new` default to contextual mode when speaker review is enabled, so callers
+`review_mode` also retains its earlier speaker suggestion and reveal policies.
+New datasets created through `new` default to contextual mode when speaker
+review is enabled, so callers
 must handle staged creation and complete inference before requesting a link.
 Caption and checklist tasks without speaker review default to manual mode.
 

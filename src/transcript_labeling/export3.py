@@ -458,6 +458,7 @@ SCHEMAS = {
              "source": "optional object kept with the item, such as the file name; its format is always the "
                        "parser's"},
     "dataset": {"title": "", "modes": "subset of checklist, speakers, captions",
+                "text_corrections": "optional boolean; defaults on for speakers/captions; false explicitly opts out, true enables for any mode; at least one effective mode must remain",
                 "speakers": "[{id, label, key}]; label may be a template such as {person}",
                 "unclear": "{id, label, key} (default unclear / Unsure / u)",
                 "mixed_answer": "result of a passage several speakers cover (default mixed)",

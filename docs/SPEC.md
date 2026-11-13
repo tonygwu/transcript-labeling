@@ -45,6 +45,18 @@ whose hash or token count differs from the item's is refused.
 - `checklist`: questions about each item, from the dataset's checklist. Fields
   with options take one key press.
 
+Speaker and caption reviews include text correction by default. This applies
+even when stored modes contain only `speakers`, including existing
+service-managed reviews. The service includes `captions` in the session modes
+and enables the `corrections` answer section without rewriting the manifest's
+mode list or saved answers.
+
+Optional `text_corrections` is a strict boolean setting. `false` disables
+caption editing even when stored modes include `captions`; `true` enables it
+for any review, including a checklist-only task. Checklist-only tasks otherwise
+keep their existing behavior. A setting that leaves no available task is
+refused. Speaker suggestion and reveal policies do not change this setting.
+
 Suggestions are drawn dashed and count only when the owner confirms them.
 Contextual model suggestions use `origin: model_confirmed` after confirmation;
 imported tags and other suggestions use `origin: suggestion_confirmed`.
@@ -63,8 +75,8 @@ stages the source, and link creation requires validated contextual suggestions
 for every speech word across every item. Readiness checks do not confirm labels
 or attest to speaker accuracy. Preparing a request runs no model; the agent
 must explicitly select and execute an approved model transport. Intentional
-manual and blind modes remain available. Existing datasets retain their policy
-without a migration.
+manual and blind modes remain available. Existing datasets retain their speaker
+suggestion and reveal policies without a migration.
 
 ## Blind first
 
