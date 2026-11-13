@@ -876,6 +876,82 @@ console.log(JSON.stringify(out));
     assert "suggestions_sha256" not in got[1]["second"][0]
 
 
+def test_large_failed_span_saves_keep_latest_edits_and_retry_the_entire_recording():
+    # Use the real serializer, queue and Retry save handler. Only the server and
+    # DOM are stubs; this checks the page's state while the server rejects saves.
+    main = (HERE / "app_main.js").read_text()
+    store = "const localStore = {" + main.split("const localStore = {", 1)[1].split("\nfunction saveNote", 1)[0]
+    got = run_span_logic(store + (HERE / "corrections.js").read_text() + """
+const recording={key:'call/one',quotes:[],excerpts:[{start:0,end:2,at:0}]},cur=recording.key;
+const SPEAKERS=[{id:'ann',key:'1'},{id:'bo',key:'2'}],SPEAKER_IDS=['ann','bo'];
+const HAS=()=>true,esc=s=>s,speakerClass=s=>s,speakerLabel=s=>s;
+const renderList=()=>{},complete=()=>false,outstanding=()=>1;
+let writable=true;
+const nodes={},node=id=>nodes[id] ||= {textContent:'',hidden:false,scrollTop:0,
+ getBoundingClientRect(){return {top:0,bottom:0};},
+ classList:{toggle(){}},querySelectorAll(){return [];},querySelector:node,dataset:{spanEditor:'-1'}};
+const root=node('root'),status=node('.span-status'),retry=node('[data-retry]');
+const document={querySelector:()=>root,querySelectorAll:selector=>
+ selector==='[data-span-editor]'?[root]:selector==='.span-status'?[status]:selector==='[data-retry]'?[retry]:[]};
+const el=node;
+const labels={'call/two':{present:true}},attrib={'other:quote':{answer:'bo'}};
+const hash='a'.repeat(64),suggestionsHash='b'.repeat(64),bundleHash='c'.repeat(64),count=1201;
+transcriptCache[recording.key]={text_sha256:hash,token_count:count,tokens:Array(count).fill('word'),
+ token_kinds:Array(count).fill('speech'),times:[],suggestions:[{start:0,end:count,speaker:'ann',source:'contextual_model'}],
+ suggestions_sha256:suggestionsHash,suggestion_bundle_sha256:bundleHash};
+const ranges=Array.from({length:1200},(_,i)=>({start:i,end:i+1,speaker:i%2?'bo':'ann',origin:'model_confirmed',
+ suggestions_sha256:suggestionsHash,suggestion_bundle_sha256:bundleHash,suggestion_evidence_scope:'range'}));
+spanAnswers['call/two']={ranges:[{start:0,end:1,speaker:'bo',origin:'human'}]};
+correctionAnswers[recording.key]={text_sha256:hash,token_count:count,revision:1,
+ edits:[{start:0,end:1,original:'word',replacement:'corrected'}]};
+const unrelated=JSON.stringify({labels,attrib,other:spanAnswers['call/two'],correctionAnswers});
+const posts=[],sizes=[];
+async function fetch(url,opt){
+ posts.push({url,...JSON.parse(opt.body)});sizes.push(Buffer.byteLength(opt.body));
+ const failed=posts.length<=2;
+ return {ok:!failed,status:failed?400:200,json:async()=>failed?
+  {error:'body must be 1..262144 bytes, got '+sizes.at(-1)}:{ok:true}};
+}
+const saver=localStore;
+saver.versions={answers:'page.0',review:'page.0'};
+(async()=>{
+ saveRanges(recording,ranges);
+ const latest=paintRanges(humanRanges(recording),1200,1201,'bo');
+ saveRanges(recording,latest);
+ await spanSaves[recording.key];
+ const failure={rangesMatch:JSON.stringify(humanRanges(recording))===JSON.stringify(latest),
+  error:spanErrors[recording.key],pending:spanPending[recording.key],retryHidden:retry.hidden,status:status.textContent};
+ retry.onclick();
+ await spanSaves[recording.key];
+ console.log(JSON.stringify({failure,sizes,count:posts.length,
+  firstCount:posts[0].value.ranges.length,retryCount:posts[2].value.ranges.length,
+  retriedLatest:JSON.stringify(posts[2].value.ranges)===JSON.stringify(latest),
+  keptEvidence:posts[2].value.ranges[0],lastRange:posts[2].value.ranges.at(-1),
+  envelopes:posts.map(p=>({url:p.url,kind:p.kind,id:p.id,versions:p.versions})),
+  assisted:posts[2].value.assisted,suggestionsHash:posts[2].value.suggestions_sha256,
+  bundleHash:posts[2].value.suggestion_bundle_sha256,
+  unrelatedKept:unrelated===JSON.stringify({labels,attrib,other:spanAnswers['call/two'],correctionAnswers}),
+  finalError:spanErrors[recording.key],finalPending:spanPending[recording.key],retryHidden:retry.hidden}));
+})();
+""")
+    assert got["count"] == 3 and all(size > 256 * 1024 for size in got["sizes"])
+    assert got["firstCount"] == 1200 and got["retryCount"] == 1201
+    assert got["failure"]["rangesMatch"] and got["failure"]["pending"] == 0
+    assert not got["failure"]["retryHidden"] and "body must be 1..262144 bytes" in got["failure"]["error"]
+    assert got["failure"]["status"].startswith("Not saved: ")
+    assert got["retriedLatest"] and got["unrelatedKept"]
+    assert got["keptEvidence"] == {
+        "start": 0, "end": 1, "speaker": "ann", "origin": "model_confirmed",
+        "suggestions_sha256": "b" * 64, "suggestion_bundle_sha256": "c" * 64,
+        "suggestion_evidence_scope": "range",
+    }
+    assert got["lastRange"] == {"start": 1200, "end": 1201, "speaker": "bo", "origin": "human"}
+    assert got["envelopes"] == [{"url": "api/answer", "kind": "spans", "id": "call/one",
+                                 "versions": {"answers": "page.0", "review": "page.0"}}] * 3
+    assert got["assisted"] and got["suggestionsHash"] == "b" * 64 and got["bundleHash"] == "c" * 64
+    assert got["finalError"] == "" and got["finalPending"] == 0 and got["retryHidden"]
+
+
 def test_long_transcript_coverage_builds_draft_labels_only_once():
     got = run_span_logic("""
 const recording={key:'call/one',quotes:[],excerpts:[]},cur=recording.key;

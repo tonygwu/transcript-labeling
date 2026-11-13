@@ -187,21 +187,21 @@ def test_refusals_write_nothing(one):
                      (b'{"kind": "labels", "kind": "spans", "id": "p/a", "value": {}}', "written twice")):
         code, res = post(base, None, raw=raw)
         assert code == 400 and why in res["error"], res
-    code, res = post(base, None, raw=b"x" * (S.MAX_BODY + 1))
+    code, res = post(base, None, raw=b"x" * (S.MAX_ANSWER_BODY + 1))
     assert code == 400 and "bytes" in res["error"]
     code, res = post(base, {"kind": "labels"}, kind_path="/api/nothing")
     assert code == 404
     assert session.answers.read_bytes() == before
 
 
-def test_a_body_four_times_the_cap_gets_the_400_not_a_reset(one):
+def test_a_body_twice_the_cap_gets_the_400_not_a_reset(one):
     # MEASURED 2026-10-11 in verbatim: before the server drained refused bodies, 3 of
     # 60 runs failed at MAX_BODY + 1, and a 1 MiB body was reset 30 times in 30.
     session, httpd, root, base = one
     outcomes = []
     for _ in range(5):
         try:
-            outcomes.append(post(base, None, raw=b"x" * (4 * S.MAX_BODY))[0])
+            outcomes.append(post(base, None, raw=b"x" * (2 * S.MAX_ANSWER_BODY))[0])
         except urllib.error.URLError as exc:
             outcomes.append(f"reset: {exc.reason}")
     assert outcomes == [400] * 5

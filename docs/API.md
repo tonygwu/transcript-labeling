@@ -29,7 +29,8 @@ check arguments and turn every refusal into a message.
   An unexpected failure is a 500 that names only the exception's type, because
   an exception's text can quote a transcript.
 - A GET must not carry a body.
-- Body limits: 256 KB for a browser write, 32 MB for an agent call.
+- Body limits: 8 MiB for an answer save, 256 KiB for other browser writes,
+  and 32 MiB for an agent call.
 
 ## Agents: `/api/v1/`
 
@@ -249,6 +250,21 @@ and transport details; full provenance exports belong in private storage.
 The session id travels in the `X-TL-Session` header, never in a cookie. Login
 links work once, within 7 days; sessions last 30 days. The four writes refuse
 the bearer token, so an agent cannot reveal suggestions or answer for the owner.
+
+An answer save replaces one annotation for one recording. Speaker saves include
+that recording's complete range list, even when only one passage changed; they
+do not replace other recordings, labels or text corrections. Both the service
+and the legacy `/s/<session>/api/answer` endpoint accept JSON bodies up to 8 MiB
+(8,388,608 bytes). Larger bodies are refused without changing saved answers.
+Login, note, reveal and done requests keep their 256 KiB limit; agent requests
+keep their 32 MiB limit. Answer refusals drain at most 16 MiB before closing the
+connection, so requests beyond that bound may receive a connection reset.
+
+An ordinary failed speaker save keeps the latest edits in the open page; Retry
+save resends the complete current range list. These edits are held in memory,
+so closing or reloading the page loses edits that have not reached the server.
+A restart invalidates the old page's write versions and requires a reload;
+Retry cannot bypass that protection.
 
 Every write sends back the `versions` that `api/answers` gave it. If something
 outside the server changed the answers or review file since that read (a `git
