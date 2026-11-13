@@ -567,3 +567,144 @@ def test_a_verbatim_shaped_item_with_two_passages(svc, browser, shots, scheme):
     page.screenshot(path=shots / f"09-passages-answered-{scheme}.png", full_page=True)
     assert errors == [] and failed == [], (errors, failed)
     ctx.close()
+
+
+@pytest.mark.parametrize("view", ["conversation", "source"])
+def test_passage_context_expands_each_side_without_changing_saved_work(svc, browser, shots, view):
+    def clock(seconds):
+        return f"00:{seconds // 60:02d}:{seconds % 60:02d}"
+
+    text = "\n\n".join(
+        f"{clock(i * 10)} --> {clock(i * 10 + 8)}\nSpeaker {i % 2 + 1}: "
+        f"Caption{i} begins with some familiar wording and continues until complete."
+        for i in range(31)
+    )
+    tokens = text.split()
+    start = tokens.index("Caption15") + 3
+    end = start + 3
+    focus = [{"start": start, "end": end, "context": [start, end], "title": "A narrow saved passage"}]
+    url = new_dataset(svc, "context", [{"name": "one", "text": text, "focus": focus,
+                                        "suggest_map": "Speaker 1=ann,Speaker 2=bo"}],
+                      config={"review_mode": "manual", "reveal": "always"})
+    key, ds = "item/one", svc.dataset("demo", "context")
+    original_item = ds.item(key)
+    original_catalog = ds.catalog()
+    segments = original_item["segments"]
+    assert len(segments) == 31
+    assert original_item["suggestions"]
+    ctx, page, errors, failed = open_page(browser, "light")
+    login(page, url)
+    page.click(f'.item[data-k="{key}"]')
+    page.wait_for_selector(".span-transcript [data-w]")
+
+    # Establish saved work before reloading this deliberately narrow older passage.
+    drag_words(page, start, start)
+    paint(page, "ann")
+    wait_for(page, lambda: spans_of(svc, "context", key), "the existing human label to save")
+    drag_words(page, start + 1, end - 1)
+    page.click("[data-correct-text]")
+    page.fill("[data-corrected-text]", "clear words")
+    page.click("[data-save-correction]")
+    page.wait_for_selector(".word.corrected")
+    saved = svc.answers_store("demo", "context", ds).load()
+    review_before = svc.reviewed(ds, saved)
+    page.reload()
+    page.wait_for_selector(".span-transcript [data-w]")
+    if view == "source":
+        page.click('[data-transcript-view="source"]')
+    area = page.locator(".span-transcript")
+
+    def visible_bounds():
+        return area.locator("[data-w]").evaluate_all(
+            "words => [+words[0].dataset.w, +words.at(-1).dataset.end]"
+        )
+
+    def target_bounds():
+        return area.locator(".word.evidence").evaluate_all(
+            "words => words.map(w => [+w.dataset.w, +w.dataset.end])"
+        )
+
+    # Complete captions straddle the 45-second boundaries at 105 and 203 seconds.
+    assert visible_bounds() == [segments[10]["body"][0], segments[20]["body"][1]]
+    assert target_bounds() == [[start, start + 1], [start + 1, end]]
+    assert area.locator(".word.corrected").inner_text().strip() == "clear words"
+    assert area.locator(f'[data-w="{start}"]').get_attribute("title") == "Human reviewed: Ann Able"
+    if view == "source":
+        assert area.locator(".seg-head").count() == 11
+
+    # Select nearby uncorrected words so expansion must retain an actual UI selection.
+    selection_start = segments[16]["body"][0]
+    drag_words(page, selection_start, selection_start + 2)
+    selected = area.locator(".selected-word").evaluate_all("words => words.map(w => w.dataset.w)")
+    summary = page.locator(".span-selection").inner_text()
+
+    def reading_anchor():
+        return area.evaluate("""area => {
+          const top = area.getBoundingClientRect().top;
+          const word = [...area.querySelectorAll('[data-w]')].find(w => {
+            const r = w.getBoundingClientRect(); return r.top >= top && r.bottom <= top + area.clientHeight;
+          });
+          if (!word) throw new Error('No readable word in transcript viewport');
+          return {index: word.dataset.w, offset: word.getBoundingClientRect().top - top};
+        }""")
+
+    def expand(side):
+        anchor = reading_anchor()
+        page.locator(f"[data-context-{side}]").click()
+        offset = area.locator(f'[data-w="{anchor["index"]}"]').evaluate(
+            "word => word.getBoundingClientRect().top - word.closest('.span-transcript').getBoundingClientRect().top"
+        )
+        assert abs(offset - anchor["offset"]) <= 2
+        assert area.locator(".selected-word").evaluate_all("words => words.map(w => w.dataset.w)") == selected
+        assert page.locator(".span-selection").inner_text() == summary
+        assert target_bounds() == [[start, start + 1], [start + 1, end]]
+        assert svc.answers_store("demo", "context", ds).load() == saved
+
+    before, after = visible_bounds()
+    expand("before")
+    widened_before, unchanged_after = visible_bounds()
+    assert widened_before < before and unchanged_after == after
+    assert widened_before == segments[5]["body"][0]
+    expand("after")
+    unchanged_before, widened_after = visible_bounds()
+    assert unchanged_before == widened_before and widened_after > after
+    assert widened_after == segments[25]["body"][1]
+    page.screenshot(path=shots / f"19-context-{view}-light.png", full_page=True)
+
+    # Switching views retains the chosen interval and the selected original words.
+    other = "source" if view == "conversation" else "conversation"
+    page.click(f'[data-transcript-view="{other}"]')
+    assert visible_bounds() == [widened_before, widened_after]
+    assert area.locator(".selected-word").evaluate_all("words => words.map(w => w.dataset.w)") == selected
+    page.click(f'[data-transcript-view="{view}"]')
+
+    for side in ("before", "after"):
+        for _ in range(10):
+            button = page.locator(f"[data-context-{side}]")
+            if button.is_disabled():
+                break
+            expand(side)
+        else:
+            pytest.fail(f"{side} expansion never reached the transcript boundary")
+        assert button.inner_text() == ("Beginning of transcript" if side == "before" else "End of transcript")
+    assert visible_bounds() == [segments[0]["body"][0], segments[-1]["body"][1]]
+    assert svc.reviewed(ds, svc.answers_store("demo", "context", ds).load()) == review_before
+    assert ds.item(key) == original_item
+    assert ds.catalog() == original_catalog
+
+    # Full transcript remains available, and its bulk action still covers only
+    # the original passage, even though suggestions surround it on both sides.
+    page.get_by_role("button", name="Expand to full transcript", exact=True).click()
+    assert area.locator(".selected-word").evaluate_all("words => words.map(w => w.dataset.w)") == selected
+    assert svc.answers_store("demo", "context", ds).load() == saved
+    page.locator("[data-confirm]").click()
+    wait_for(page, lambda: len(spans_of(svc, "context", key)) > 1, "the original passage confirmation to save")
+    after_confirm = svc.answers_store("demo", "context", ds).load()
+    ranges = after_confirm["spans"][key]["ranges"]
+    assert all(start <= r["start"] < r["end"] <= end for r in ranges)
+    assert ranges[0] == saved["spans"][key]["ranges"][0]
+    assert after_confirm["corrections"] == saved["corrections"]
+    assert ds.item(key) == original_item
+    assert ds.catalog() == original_catalog
+    assert errors == [] and failed == [], (errors, failed)
+    ctx.close()

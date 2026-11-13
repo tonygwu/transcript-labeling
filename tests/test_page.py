@@ -566,6 +566,84 @@ def fragmented_item():
                             {"start": 21, "end": 24, "speaker": "bo", "source": "contextual_model"}]}
 
 
+def context_item():
+    return {"tokens": [f"word{i}" for i in range(186)],
+            "token_kinds": [kind for _ in range(31) for kind in ["meta", "meta"] + ["speech"] * 4],
+            "times": [],
+            "segments": [{"header": [i * 6, i * 6 + 2], "body": [i * 6 + 2, i * 6 + 6],
+                          "t_start": i * 10, "t_end": i * 10 + 8, "label": "Speaker 1"}
+                         for i in range(31)],
+            "suggestions": [{"start": 0, "end": 186, "speaker": "ann", "source": "contextual_model"}]}
+
+
+def test_old_narrow_passages_get_complete_captions_and_45_seconds_of_context():
+    got = run_span_logic(f"""
+const recording={{key:'call/one',quotes:[{{start:93,end:95,quote_start:93,quote_end:95}}]}};
+transcriptCache[recording.key]={json.dumps(context_item())};
+const original=JSON.stringify(recording);
+console.log(JSON.stringify({{window:spanWindow(recording,0),unchanged:original===JSON.stringify(recording)}}));
+""")
+    assert got == {"window": [60, 126], "unchanged": True}
+
+
+def test_context_expands_each_side_independently_and_stops_at_transcript_limits():
+    got = run_span_logic(f"""
+const recording={{key:'call/one',quotes:[{{start:93,end:95,quote_start:93,quote_end:95}}]}};
+transcriptCache[recording.key]={json.dumps(context_item())};
+const windows=[spanWindow(recording,0)];
+expandSpanContext(recording,0,'before');windows.push(spanWindow(recording,0));
+expandSpanContext(recording,0,'after');windows.push(spanWindow(recording,0));
+for(let i=0;i<5;i++)expandSpanContext(recording,0,'before');windows.push(spanWindow(recording,0));
+for(let i=0;i<5;i++)expandSpanContext(recording,0,'after');windows.push(spanWindow(recording,0));
+console.log(JSON.stringify(windows));
+""")
+    assert got == [[60, 126], [30, 126], [30, 156], [0, 156], [0, 186]]
+
+
+def test_context_and_full_transcript_do_not_widen_bulk_confirmation_or_change_saved_work():
+    got = run_span_logic(f"""
+const writable=true,SPEAKER_IDS=['ann','bo'];
+const recording={{key:'call/one',quotes:[{{start:93,end:95,quote_start:93,quote_end:95}}]}};
+transcriptCache[recording.key]={json.dumps(context_item())};
+spanAnswers[recording.key]={{ranges:[{{start:93,end:94,speaker:'bo',origin:'human'}}]}};
+const before=JSON.stringify([recording,spanAnswers,transcriptCache[recording.key].suggestions]);
+spanSelections['call/one:0']=[93,95];
+expandSpanContext(recording,0,'before');expandSpanContext(recording,0,'after');
+spanFull['call/one:0']=true;
+const unchanged=before===JSON.stringify([recording,spanAnswers,transcriptCache[recording.key].suggestions]);
+let saved;saveRanges=(r,ranges)=>{{saved=ranges;}};
+confirmDrafts(recording,0);
+console.log(JSON.stringify({{unchanged,selection:spanSelections['call/one:0'],saved,review:quoteReview(recording,0)}}));
+""")
+    assert got["unchanged"] and got["selection"] == [93, 95]
+    assert got["saved"] == [{"start": 93, "end": 94, "speaker": "bo", "origin": "human"},
+                            {"start": 94, "end": 95, "speaker": "ann", "origin": "model_confirmed"}]
+    assert got["review"]["missing"] == [94] and got["review"]["total"] == 2
+
+
+def test_untimed_context_uses_120_spoken_words_and_keeps_each_excerpt_separate():
+    got = run_span_logic("""
+const recording={key:'call/one',quotes:[],excerpts:[{start:250,end:260},{start:500,end:510}]};
+transcriptCache[recording.key]={tokens:Array(800).fill('word'),token_kinds:Array(800).fill('speech'),times:[],segments:[]};
+const windows=[spanWindow(recording,-1)];
+expandSpanContext(recording,-1,'before');windows.push(spanWindow(recording,-1));
+spanSample[recording.key]=1;windows.push(spanWindow(recording,-1));
+spanSample[recording.key]=0;windows.push(spanWindow(recording,-1));
+console.log(JSON.stringify(windows));
+""")
+    assert got == [[130, 380], [10, 380], [380, 630], [10, 380]]
+
+
+def test_timestamp_only_context_keeps_whole_marked_intervals():
+    got = run_span_logic("""
+const recording={key:'call/one',quotes:[{start:152,end:155,quote_start:152,quote_end:155}]};
+transcriptCache[recording.key]={tokens:Array(310).fill('word'),token_kinds:Array(310).fill('speech'),
+ times:Array.from({length:31},(_,i)=>[i*10,i*10]),segments:[]};
+console.log(JSON.stringify(spanWindow(recording,0)));
+""")
+    assert got == [100, 210]
+
+
 def test_conversation_groups_fragmented_words_but_keeps_exact_source_ranges_and_notes():
     data = fragmented_item()
     got = run_span_logic(f"const data={json.dumps(data)}; console.log(JSON.stringify(transcriptTurns(data,draftStates(data),[],0,24)));")

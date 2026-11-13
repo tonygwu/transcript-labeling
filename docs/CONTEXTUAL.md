@@ -259,6 +259,23 @@ Source captions view. Speaker changes inside a caption retain that caption's
 original interval. Missing end times remain missing. A turn boundary never
 creates a new timestamp. Caption corrections remain separately recorded.
 
+Both views add 45 seconds of surrounding dialogue on each side of the saved
+passage window, including for existing reviews. Boundaries include complete
+captions. Without source segments, each timestamp and its following words stay
+together. Where timing is unavailable, the display adds 120 spoken words per
+side instead. These are display choices; no stored passage or target offsets
+are rewritten.
+
+**Show more before** and **Show more after** add another 45 seconds from the
+displayed edge, independently. A pause longer than that still reveals the next
+caption. The controls indicate when the transcript's beginning or end is reached.
+Your selection and reading position stay in place, and each excerpt keeps its
+own expanded window during the page session. **Expand to full transcript** is
+still available. Underlined words remain the review target; other words provide
+context. Bulk confirmation always uses the original saved passage window,
+including its original context, even in full transcript view. Additional context
+does not change quote completion, suggestions, saved labels or text corrections.
+
 Text correction is enabled by default for these reviews, even when `modes`
 contains only `speakers`. Existing service-managed speaker reviews gain the
 controls without changing their stored modes or answers. If the task

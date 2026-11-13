@@ -55,6 +55,15 @@ timestamp available.
 Click **Accept** beside a suggested speaker block to confirm that block's words.
 Your other markings stay as they are, and **Undo marking** reverses the acceptance.
 
+Passages include 45 seconds of dialogue before and after their saved window,
+rounded outward to complete captions. This also applies to existing reviews.
+**Show more before** and **Show more after** add another 45 seconds on that side
+without losing your selection or reading position. Untimed text uses 120 spoken
+words per side instead. Both transcript views keep the target words underlined,
+and **Expand to full transcript** remains available. Bulk confirmation covers
+only the original saved passage, including its original context, even when you
+show more dialogue. Only the target quote words determine the passage result.
+
 For intentional manual labeling, choose `--review-mode manual`; suggestions are
 optional. For blind review, choose `--review-mode blind`; the page hides
 suggestions until you mark at least one range and ask to see them. It records

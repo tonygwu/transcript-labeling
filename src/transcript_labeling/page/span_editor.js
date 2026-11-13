@@ -4,6 +4,9 @@ let spanAnswers = {};
 const transcriptCache = {}, transcriptLoads = {}, spanSelections = {}, spanFull = {}, spanSample = {};
 const spanUndo = {}, spanSaves = {}, spanErrors = {}, spanPending = {};
 const spanEditing = {}, spanSourceView = {};
+// Display state only. Stored passages, target words and bulk-confirm bounds never change.
+const spanContexts = {};
+const CONTEXT_SECONDS = 45, CONTEXT_WORDS = 120;
 // The editor where words were last selected, as "<item key>:<editor index>", so a
 // speaker's key can label them.
 let spanLast = null;
@@ -19,13 +22,65 @@ function transcriptFor(recording){
   return transcriptCache[recording.key]=data;
  })().catch(error=>{delete transcriptLoads[recording.key];throw error;});
 }
-function spanWindow(recording,index){
+function spanReviewWindow(recording,index){
  const data=transcriptCache[recording.key];
- if(spanFull[recording.key+":"+index]) return [0,data.tokens.length];
  // An item with no reading excerpts (a dataset item, not a verbatim recording) shows whole.
  if(index<0 && !(recording.excerpts||[]).length) return [0,data.tokens.length];
  const passage=index<0 ? recording.excerpts[spanSample[recording.key]||0] : recording.quotes[index];
  return [passage?.start||0,Math.min(passage?.end||130,data.tokens.length)];
+}
+function contextKey(recording,index){
+ return recording.key+":"+index+(index<0?":"+(spanSample[recording.key]||0):"");
+}
+function contextCaptions(data){
+ if(data.segments?.length)return data.segments.map(s=>({
+  start:s.header[0],end:s.body[1],time:s.t_start,endTime:s.t_end??s.t_start
+ }));
+ // Without source segments, a timestamp and the words up to the next mark form
+ // one indivisible context interval. Do not invent a time for unmarked text.
+ return (data.times||[]).map(([start,time],i,marks)=>({
+  start,end:marks[i+1]?.[0]??data.tokens.length,time,endTime:marks[i+1]?.[1]??time
+ }));
+}
+function completeContextCaptions(data,[lo,hi]){
+ for(const caption of contextCaptions(data))if(caption.start<hi&&caption.end>lo){
+  lo=Math.min(lo,caption.start);hi=Math.max(hi,caption.end);
+ }
+ return [lo,hi];
+}
+function widenContext(data,bounds,side){
+ let [lo,hi]=completeContextCaptions(data,bounds);
+ const captions=contextCaptions(data),before=side==="before";
+ const edge=captions.find(c=>before?c.start<=lo&&lo<c.end:c.start<hi&&hi<=c.end);
+ const time=before?edge?.time:edge?.endTime;
+ const candidates=captions.filter(c=>before?c.start<lo:c.end>hi);
+ if(Number.isFinite(time)&&candidates.length&&candidates.every(c=>Number.isFinite(before?c.endTime:c.time))){
+  const nearby=candidates.filter(c=>before?c.endTime>=time-CONTEXT_SECONDS:c.time<=time+CONTEXT_SECONDS);
+  // A pause longer than the step still reveals the next caption on a button press.
+  const added=nearby.length?nearby:[before?candidates.at(-1):candidates[0]];
+  if(before)lo=Math.min(lo,...added.map(c=>c.start));
+  else hi=Math.max(hi,...added.map(c=>c.end));
+ }else{
+  let words=0;
+  if(before)while(lo>0&&words<CONTEXT_WORDS){lo--;if(data.token_kinds[lo]==="speech")words++;}
+  else while(hi<data.tokens.length&&words<CONTEXT_WORDS){if(data.token_kinds[hi]==="speech")words++;hi++;}
+ }
+ return completeContextCaptions(data,[lo,hi]);
+}
+function spanWindow(recording,index){
+ const data=transcriptCache[recording.key];
+ if(spanFull[recording.key+":"+index])return [0,data.tokens.length];
+ const key=contextKey(recording,index);
+ if(!spanContexts[key]){
+  const original=spanReviewWindow(recording,index);
+  const before=widenContext(data,original,"before"),after=widenContext(data,original,"after");
+  spanContexts[key]=[before[0],after[1]];
+ }
+ return spanContexts[key];
+}
+function expandSpanContext(recording,index,side){
+ if(!["before","after"].includes(side))throw new Error("Unknown context direction: "+side);
+ spanContexts[contextKey(recording,index)]=widenContext(transcriptCache[recording.key],spanWindow(recording,index),side);
 }
 function humanRanges(recording){
  if(spanAnswers[recording.key]){
@@ -227,7 +282,7 @@ function acceptTurn(recording,index,start,end,speaker,source){
 }
 function confirmDrafts(recording,index){
  if(!writable)return;
- const [start,end]=spanWindow(recording,index), states=statesFor(recording);let ranges=humanRanges(recording);
+ const [start,end]=spanReviewWindow(recording,index), states=statesFor(recording);let ranges=humanRanges(recording);
  rememberRanges(recording);
  for(let i=start;i<end;){const label=states[i];let j=i+1;
   while(j<end&&sameAttribution(states[j],label))j++;
@@ -284,9 +339,27 @@ function drawAllSpans(recording){
  if(cur!==recording.key)return;
  document.querySelectorAll("[data-span-editor]").forEach(node=>drawSpanEditor(recording,+node.dataset.spanEditor));
 }
+function transcriptPosition(area){
+ if(!area)return null;
+ const box=area.getBoundingClientRect();
+ const word=[...area.querySelectorAll("[data-w]")].find(node=>{
+  const rect=node.getBoundingClientRect();return rect.bottom>box.top&&rect.top<box.bottom;
+ });
+ return {scrollTop:area.scrollTop,word:word?.dataset.w,
+  offset:word?word.getBoundingClientRect().top-box.top:0,top:box.top,
+  visible:box.bottom>0&&box.top<window.innerHeight};
+}
+function restoreTranscriptPosition(area,position){
+ if(!position)return;
+ area.scrollTop=position.scrollTop;
+ const word=position.word===undefined?null:area.querySelector(`[data-w="${position.word}"]`);
+ if(word)area.scrollTop+=word.getBoundingClientRect().top-area.getBoundingClientRect().top-position.offset;
+ // Keep both the inner reading position and the page viewport when controls wrap.
+ if(position.visible)window.scrollBy(0,area.getBoundingClientRect().top-position.top);
+}
 function drawSpanEditor(recording,index){
  const root=document.querySelector(`[data-span-editor="${index}"]`);if(!root||cur!==recording.key)return;
- const scrollTop=root.querySelector(".span-transcript")?.scrollTop||0;
+ const position=transcriptPosition(root.querySelector(".span-transcript"));
  const data=transcriptCache[recording.key];if(!data)return;
  const saved=spanAnswers[recording.key];
  const corrected=correctionAnswers[recording.key];
@@ -295,12 +368,16 @@ function drawSpanEditor(recording,index){
  }
  const id=recording.key+":"+index,[lo,hi]=spanWindow(recording,index),states=statesFor(recording),edits=editsFor(recording);
  const quote=index>=0?recording.quotes[index]:null;
+ const excerpts=recording.excerpts||[];
+ const hasPassage=index>=0||excerpts.length>0;
+ const [reviewLo,reviewHi]=spanReviewWindow(recording,index);
+ const focus=quote||(hasPassage?{quote_start:reviewLo,quote_end:reviewHi}:null);
  const spoken=speechIndices(data,lo,hi);
- const markable=spoken.some(i=>states[i].draft&&SPEAKER_IDS.includes(states[i].speaker));
+ const markable=speechIndices(data,reviewLo,reviewHi).some(i=>states[i].draft&&SPEAKER_IDS.includes(states[i].speaker));
  const segments=data.segments||[], segHead=new Map(segments.map(s=>[s.header[0],s]));
  const drafts=draftLabels(data),known=spoken.filter(i=>drafts[i]!=="unknown").length;
  const timestamps=new Map(data.times);
- let words=spanSourceView[id]?"":conversationMarkup(data,states,edits,lo,hi,recording,quote);
+ let words=spanSourceView[id]?"":conversationMarkup(data,states,edits,lo,hi,recording,focus);
  for(let i=lo;spanSourceView[id]&&i<hi;i++){
   const unit=displayUnit(data,states,edits,i);
   const kind=data.token_kinds[i];
@@ -315,19 +392,19 @@ function drawSpanEditor(recording,index){
    const link=mediaUrl(recording,timestamps.get(i));
    words+=`<span class="caption-time" contenteditable="false">${link?`<a href="${esc(link)}" target="_blank" rel="noopener">▶ ${esc(unit.text)}</a>`:esc(unit.text)}</span>`;
   }else if(kind!=="speech") words+=markerMarkup(unit);
-  else words+=wordMarkup(unit,recording,quote);
+  else words+=wordMarkup(unit,recording,focus);
   if(unit.edit)i=unit.end-1;
 
  }
- const SPK=HAS("speakers"),CAP=HAS("captions"),excerpts=recording.excerpts||[];
+ const SPK=HAS("speakers"),CAP=HAS("captions");
  // The whole-item editor sits under a heading of its own (renderDetail), so it repeats none.
  const top=(index<0?"":`<b>${SPK?"Mark who is speaking":"Correct the captions"}</b>`)
   +(index<0&&!excerpts.length?"":`<button type="button" class="opt" data-expand>${spanFull[id]?"Back to passage":"Expand to full transcript"}</button>`);
- const view=spanFull[id]?"full transcript":index<0&&!excerpts.length?"this transcript":"this passage";
+ const view=hasPassage?"original passage":"this transcript";
  const marked=humanRanges(recording).filter(range=>range.start<hi&&range.end>lo&&speechIndices(data,Math.max(lo,range.start),Math.min(hi,range.end)).length);
  root.innerHTML=`${top?`<div class="span-top">${top}</div>`:""}
   <p class="span-instructions">Select words, then ${SPK&&CAP?"choose who said them or use Correct text for caption errors":SPK?"choose who said them":"use Correct text for caption errors"}. Caption gaps and playback times are skipped automatically.</p>
-  <div class="span-legend">${SPEAKERS.map(sp=>`<span class="${speakerClass(sp.id)} reviewed">${esc(speakerLabel(sp.id,recording))} · reviewed</span>`).join("")}<span class="unclear reviewed">${esc(UNCLEAR.label)} · reviewed</span><span class="${speakerClass(SPEAKER_IDS[0])} draft">Dashed · unconfirmed suggestion</span><span>Plain · not reviewed</span>${quote?'<span class="evidence">Underline · passage being checked</span>':""}</div>
+  <div class="span-legend">${SPEAKERS.map(sp=>`<span class="${speakerClass(sp.id)} reviewed">${esc(speakerLabel(sp.id,recording))} · reviewed</span>`).join("")}<span class="unclear reviewed">${esc(UNCLEAR.label)} · reviewed</span><span class="${speakerClass(SPEAKER_IDS[0])} draft">Dashed · unconfirmed suggestion</span><span>Plain · not reviewed</span>${focus?'<span class="evidence">Underline · passage being checked</span>':""}</div>
   ${data.suggestions_hidden?`<p class="span-model"><button type="button" class="opt" data-reveal ${writable?"":"disabled"}>Show suggestions (${data.suggestions_hidden})</button> Hidden until you ask, so what you mark first is your own reading. The ranges you have marked so far are kept as your blind answer.</p>`:""}
   <p class="span-model">${known?"Suggestions cover "+known+" of these "+spoken.length+" words. Confirm or correct them; their source is shown with each turn.":`${data.suggestions_hidden?"":"No suggestions for these words. "}Label the words you can identify; use “${esc(UNCLEAR.label)}” when you cannot identify the speaker.`} ${states.slice(lo,hi).some(s=>s.speaker==="conflict")?"Attributions conflict on the dotted words; review those yourself.":""}</p>
   ${index<0&&!spanFull[id]&&excerpts.length?`<label class="span-samples">Passage <select data-sample>${excerpts.map((e,i)=>`<option value="${i}" ${i===(spanSample[recording.key]||0)?"selected":""}>${Math.round(e.at*100)}% into the transcript</option>`).join("")}</select></label>`:""}
@@ -340,7 +417,10 @@ function drawSpanEditor(recording,index){
   ${correctionPanel(recording,index,lo,hi)}
   <div class="transcript-view" role="group" aria-label="Transcript display"><button type="button" class="opt" data-transcript-view="conversation" aria-pressed="${!spanSourceView[id]}">Conversation</button><button type="button" class="opt" data-transcript-view="source" aria-pressed="${!!spanSourceView[id]}">Source captions</button></div>
   ${spanSourceView[id]?'<p class="span-instructions">Original caption boundaries and labels. Your text corrections appear in both views.</p>':""}
+  ${hasPassage?`<p class="span-instructions">Underlined words are being reviewed; other words provide context. Context starts 45 seconds before and after the original passage, keeping complete captions. Each button adds 45 seconds on that side, or 120 spoken words where timing is unavailable.</p>
+  <div class="span-context" role="group" aria-label="Surrounding dialogue"><button type="button" class="opt" data-context-before ${lo===0?"disabled":""}>${lo===0?"Beginning of transcript":"Show more before"}</button><button type="button" class="opt" data-context-after ${hi===data.tokens.length?"disabled":""}>${hi===data.tokens.length?"End of transcript":"Show more after"}</button></div>`:""}
   <div class="span-transcript" tabindex="0" role="region" aria-label="Transcript passage for speaker annotation">${words}</div>
+  ${hasPassage&&SPK?'<p class="span-instructions">Bulk confirmation covers only the original passage, including its saved context. Showing more dialogue does not widen it.</p>':""}
   <div class="opts">${SPK?`<button type="button" class="opt" data-confirm ${!writable||!markable?"disabled":""}>Confirm suggested spans in ${view}</button>`:""}
    <button type="button" class="opt" data-undo ${!writable||!spanUndo[recording.key]?.length?"disabled":""}>Undo marking</button>
    <button type="button" class="opt" data-retry ${!spanErrors[recording.key]?"hidden":""}>Retry save</button></div>
@@ -351,7 +431,14 @@ function drawSpanEditor(recording,index){
   ${quote?reviewSummary(recording,index):""}`;
 
  const expand=root.querySelector("[data-expand]");
- if(expand)expand.onclick=()=>{spanFull[id]=!spanFull[id];delete spanSelections[id];delete spanEditing[id];drawSpanEditor(recording,index);};
+ if(expand)expand.onclick=()=>{spanFull[id]=!spanFull[id];drawSpanEditor(recording,index);};
+ for(const side of ["before","after"]){
+  const button=root.querySelector(`[data-context-${side}]`);
+  if(button)button.onclick=()=>{
+   expandSpanContext(recording,index,side);drawSpanEditor(recording,index);
+   root.querySelector(`[data-context-${side}]`)?.focus({preventScroll:true});
+  };
+ }
  root.querySelectorAll("[data-transcript-view]").forEach(button=>button.onclick=()=>{spanSourceView[id]=button.dataset.transcriptView==="source";drawSpanEditor(recording,index);});
  root.querySelectorAll("[data-accept-turn]").forEach(button=>button.onclick=()=>{
   const [start,end]=button.dataset.acceptTurn.split(",").map(Number);
@@ -372,7 +459,7 @@ function drawSpanEditor(recording,index){
  };
  const sample=root.querySelector("[data-sample]");if(sample)sample.onchange=()=>{spanSample[recording.key]=+sample.value;delete spanSelections[id];drawSpanEditor(recording,index);};
  const area=root.querySelector(".span-transcript");
- area.scrollTop=scrollTop;
+ restoreTranscriptPosition(area,position);
  const capture=()=>{
   const selection=window.getSelection();if(!selection||selection.isCollapsed||!selection.rangeCount)return;
   const range=selection.getRangeAt(0);
