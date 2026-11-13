@@ -58,6 +58,14 @@ under a lock without replacing human state or focus passages, and retains prior
 suggestion bundles. See [CONTEXTUAL.md](CONTEXTUAL.md) for the model-adapter and
 migration contracts. Conversation view changes presentation only.
 
+New speaker reviews default to contextual correction mode. Dataset creation
+stages the source, and link creation requires validated contextual suggestions
+for every speech word across every item. Readiness checks do not confirm labels
+or attest to speaker accuracy. Preparing a request runs no model; the agent
+must explicitly select and execute an approved model transport. Intentional
+manual and blind modes remain available. Existing datasets retain their policy
+without a migration.
+
 ## Blind first
 
 Under `reveal: after_answer`, an item's suggestions stay on the server until the

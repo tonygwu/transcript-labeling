@@ -87,6 +87,13 @@ cached build of the same path and install the old version again, and then
 version. `tl doctor` fails while the running service's version differs from
 the installed one.
 
+After an upgrade, start a fresh `tl mcp` process and inspect its `initialize`
+response and `tools/list`. Check the returned server version, workflow
+instructions and tool schemas against the release. Restarting the HTTP service
+does not reload already-running MCP processes or tool descriptions cached in
+an agent's chat. Reconnect that MCP client or start a new session to load the
+updated instructions. Do not terminate other agents' MCP processes.
+
 ## Remove
 
 ```sh

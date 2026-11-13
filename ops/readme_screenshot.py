@@ -107,7 +107,7 @@ def main() -> int:
         try:
             url = ServiceClient(home).post("new", {
                 "project": "demo", "dataset": "planning-call", "repo": "me/repo", "create_project": True,
-                "speakers": SPEAKERS, "title": "Weekly planning call",
+                "speakers": SPEAKERS, "title": "Weekly planning call", "config": {"review_mode": "blind"},
                 "items": [{"name": "call-1", "text": CALL, "group": "call", "row": {"title": "North span budget"},
                            "suggest_map": "Speaker 1=jane,Speaker 2=sam"}]})["url"]
             with sync_playwright() as p:

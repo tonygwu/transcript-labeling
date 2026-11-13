@@ -2,9 +2,10 @@
 
 A labeling service that runs on your Mac, for transcripts that a coding agent
 needs a person to check. An agent such as Claude Code or Codex gives the service
-a transcript and sends you the link that the service returns. You open it, mark
-who said which words, correct any caption errors and press Finish. The agent
-then reads your labels back as JSON.
+a transcript, prepares contextual speaker suggestions with an explicitly
+selected model, and sends you a review link. You open it, confirm or correct who
+said which words, correct any caption errors and press Finish. The agent then
+reads your labels back as JSON.
 
 ![The labeling page, open on an invented planning call between Jane Roe and Sam Poe](docs/images/labeling-page.png)
 
@@ -15,10 +16,10 @@ Sam. The late joiner's caption at 0:20 is not marked yet.*
 ## Why it exists
 
 Transcripts often name speakers badly. A transcriber writes "Speaker 1" or
-"Unknown", or puts two people into one caption. An agent cannot tell who spoke,
-and a guess is not a label. Before this service, each such check needed a
-one-off web page and a downloaded answers file. Now it takes one command for
-the agent and one link for you.
+"Unknown", or puts two people into one caption. An agent's speaker guess needs
+a human check. Before this service, each such check needed a
+one-off web page and a downloaded answers file. The service now keeps the
+transcript, suggestions and your corrections together, with one link for you.
 
 ## What you can label
 
@@ -32,35 +33,48 @@ the agent and one link for you.
 
 Each answer saves the moment you make it.
 
-An agent can also attach suggestions, such as the transcriber's own speaker
-labels. By default the page hides them until you mark at least one range and
-ask to see them. Your first marks are then your own reading. The service keeps
-a record of the marks you made before you saw the suggestions, so results with
-and without them can be reported apart.
+New speaker reviews default to contextual correction work. The agent uses the
+whole conversation and descriptions of the speakers' identities and roles to
+produce suggestions. The service releases a login link only after contextual
+suggestions cover all speech in every item. Uncertain suggestions are allowed;
+source-tag mappings alone do not meet this requirement. The page shows the
+suggestions immediately, clearly separate from your confirmed labels.
 
-For correction work, choose `--reveal always` to show suggestions immediately.
-The [contextual workflow](docs/CONTEXTUAL.md) can infer tentative speakers from
-the whole conversation using a caller-selected model. It validates exact source
-word ranges and records model provenance separately from imported speaker tags
-and human confirmations. Conversation view groups fragments for reading while
-keeping every original caption and timestamp available.
+The [contextual workflow](docs/CONTEXTUAL.md) requires an explicitly selected,
+approved model and transport. Preparing a request does not run that model.
+The service validates exact source word ranges and records model provenance
+separately from imported speaker tags and human confirmations. Conversation view
+groups fragments for reading while keeping every original caption and
+timestamp available.
 Click **Accept** beside a suggested speaker block to confirm that block's words.
 Your other markings stay as they are, and **Undo marking** reverses the acceptance.
+
+For intentional manual labeling, choose `--review-mode manual`; suggestions are
+optional. For blind review, choose `--review-mode blind`; the page hides
+suggestions until you mark at least one range and ask to see them. It records
+which marks preceded the reveal. Existing datasets keep their current behavior.
 
 ## How it works
 
 1. The agent runs `tl new` with the transcript file and the list of speakers.
-   The service stores the transcript and returns a one-time login link.
-2. The agent sends you the link. The link works once, within 7 days.
+   The service stores the transcript. If contextual suggestions are missing,
+   the dataset stays staged and the response has no login link.
+2. The agent prepares a private model request with speaker identity and role
+   descriptions, explicitly runs the approved model, validates its response,
+   and attaches the suggestions. It checks readiness, obtains the link with
+   `tl url`, and sends it to you. The link works once, within 7 days.
 3. You label in the browser, then press Finish.
 4. The agent runs `tl wait` until you finish, or checks later with `tl status`.
 5. The agent runs `tl export` and reads the file that it writes.
 
 ```sh
-tl new demo/planning-call --from-file call.txt --create-project \
+tl new demo/planning-call --from-file /private/data/call.txt --create-project \
   --speakers "jane=Jane Roe:1,sam=Sam Poe:2"
-# Send the owner this link (it works once, within 7 days):
-# http://127.0.0.1:8790/login#code=...
+# The dataset is staged until contextual suggestions are attached.
+# Follow docs/CONTEXTUAL.md to prepare, run, validate and attach them.
+tl status demo/planning-call --json
+tl url demo/planning-call
+# Send the returned login link only after this command succeeds.
 
 tl wait demo/planning-call --until done --timeout 3600
 tl export demo/planning-call segments
@@ -71,6 +85,12 @@ tl export demo/planning-call segments
 task, and each transcript in it is an item. Each speaker is written as
 `id=Label:key`. The id appears in the export, the label appears on the page, and
 the key marks the selected words.
+
+If the agent already has a validated contextual bundle, it can pass
+`--suggestions /private/data/suggestions.json` to `tl new` and receive the link
+immediately. If the model fails or no provider is approved, the agent reports
+the problem and keeps the review staged. It must not fabricate suggestions or
+switch to manual mode to hide that failure.
 
 Each write names the repository it comes from, and a project accepts writes
 only from the repositories it lists. The list is set when the project is made,
@@ -136,6 +156,10 @@ args = ["mcp"]
 
 Through MCP, an agent can write only to local-only projects. Its `export` tool
 returns the file's path and counts, never the transcript text.
+The correction flow is `new`, `contextual_prepare`, an explicit model call,
+`contextual_resolve`, `suggestions_set`, then `url`. The model call happens
+through an approved external transport or `tl contextual run`; neither `new`
+nor `contextual_prepare` calls a model. See [the tool contracts](docs/API.md#mcp-tools-tl-mcp).
 
 ## Privacy and safety
 

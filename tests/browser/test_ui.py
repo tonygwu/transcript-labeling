@@ -105,7 +105,7 @@ def browser():
 
 def new_dataset(svc, dataset, items, **extra):
     body = {"project": "demo", "dataset": dataset, "repo": "me/repo", "create_project": True,
-            "speakers": SPEAKERS, "items": items, **extra}
+            "speakers": SPEAKERS, "items": items, "config": {"reveal": "after_answer"}, **extra}
     return ServiceClient(svc.home).post("new", body)["url"]
 
 
@@ -301,7 +301,8 @@ def test_fragmented_conversation_preserves_words_sources_and_human_edits(svc, br
             "00:00:06 --> 00:00:08\nSpeaker 2: Fine, thanks.\n")
     url = new_dataset(svc, "fragments", [{"name": "one", "text": text, "group": "call"}],
                       speakers=[{"id": "ann", "label": "Me", "key": "1"},
-                                {"id": "bo", "label": "Interviewer", "key": "2"}], config={"reveal": "always"})
+                                {"id": "bo", "label": "Interviewer", "key": "2"}],
+                      config={"reveal": "always", "review_mode": "manual"})
     key, dataset = "call/one", svc.dataset("demo", "fragments")
     original = dataset.item(key)
     segments = original["segments"]
@@ -397,7 +398,7 @@ def test_accepting_one_suggested_block_saves_only_its_speech_and_can_be_undone(s
             "00:00:06 --> 00:00:08\nSpeaker 2: That is good.\n\n"
             "00:00:08 --> 00:00:09\nUnknown: Hard to hear.\n")
     url = new_dataset(svc, "accept-block", [{"name": "one", "text": text, "group": "call"}],
-                      config={"reveal": "always"})
+                      config={"reveal": "always", "review_mode": "manual"})
     key, dataset = "call/one", svc.dataset("demo", "accept-block")
     original = dataset.item(key)
     segments = original["segments"]
@@ -520,7 +521,8 @@ def test_a_verbatim_shaped_item_with_two_passages(svc, browser, shots, scheme):
                                        "focus": [{"start": p1[0], "end": p1[1], "title": "The bridge claim",
                                                   "question": "Who says this?"},
                                                  {"start": p2[0], "end": p2[1], "title": "The second span"}]}],
-                      config={"media": {"url": "https://media.example/watch?v={video_id}&t={t}"}})
+                      config={"review_mode": "blind",
+                              "media": {"url": "https://media.example/watch?v={video_id}&t={t}"}})
     key = "item/talk"
     ctx, page, errors, failed = open_page(browser, scheme)
     login(page, url)

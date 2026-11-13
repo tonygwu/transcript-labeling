@@ -33,10 +33,21 @@ WAIT_CAP_S = 50.0
 #: Protocol versions this server speaks, newest first. A client asking for another
 #: gets the newest, as the MCP lifecycle rules say.
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
-INSTRUCTIONS = ("Have the owner label transcripts. Flow: new (prints a login link to send the owner), then wait "
-                "or status, then export (writes a file and returns its path), then verify. Transcripts never go "
-                "into a repository; read exports from the path returned. Unmarked words are unknown and "
-                "suggestions are never labels.")
+INSTRUCTIONS = (
+    "Have the owner correct contextual speaker suggestions. Normal flow: new stages a correction review; "
+    "contextual_prepare writes a private request using explicit speaker identity/role descriptions whose ids "
+    "match the review buttons. Preparation does NOT run a model. Explicitly select an approved provider, "
+    "account, model and isolated adapter, then execute `tl contextual run --request PATH --model MODEL "
+    "--adapter-file PRIVATE_ARGV_JSON --work-dir PRIVATE_DIR --timeout SECONDS`, or use an approved external "
+    "model runner and contextual_resolve on its retained response. Never invent a model receipt. Inspect one "
+    "full raw response and its served-model telemetry. suggestions_set installs the validated bundle using "
+    "the digest returned by contextual_prepare, preserving human edits. Check status.readiness; only after "
+    "it is ready call url and send the owner the link. If setup, inference or validation fails, report the "
+    "failure and keep the review staged; never hand over a blank correction review or silently switch modes. "
+    "Use review_mode manual or blind only when intentional; blind hides suggestions until the owner answers. "
+    "suggest_map only maps source tags and does not perform contextual inference. After handoff: wait or "
+    "status, export, verify. Transcripts, requests, responses and exports stay outside every Git checkout; "
+    "tools return private paths, not text. Unmarked words are unknown; suggestions are never confirmed labels.")
 
 STR, BOOL, NUM = {"type": "string"}, {"type": "boolean"}, {"type": "number"}
 REF = {"project": STR, "dataset": STR}
@@ -50,9 +61,11 @@ ITEM = {"file": {"type": "string", "description": "absolute path of the transcri
 SPEAKER = {"type": "object", "properties": {"id": STR, "label": STR, "key": STR}, "required": ["id", "label", "key"]}
 
 TOOLS = {
-    "new": ("Make a local-only dataset from one transcript file and return the owner's login link.",
+    "new": ("Stage a local-only correction review. Default speaker reviews need contextual suggestions before a link is returned.",
             {**REF, **ITEM, "create_project": BOOL, "speakers": {"type": "array", "items": SPEAKER},
              "modes": {"type": "array", "items": STR}, "title": STR, "config": {"type": "object"},
+             "review_mode": {"type": "string", "enum": ["contextual", "manual", "blind"],
+                             "description": "contextual by default for speakers; manual/blind only when intentional"},
              "reveal": {"type": "string", "enum": ["always", "after_answer"]}},
             ["project", "dataset", "file", "repo"]),
     "items_add": ("Add one transcript file to an existing local-only dataset.",
@@ -61,12 +74,16 @@ TOOLS = {
                         {**REF, "repo": ITEM["repo"], "item": STR, "suggestions_file": ITEM["suggestions_file"],
                          "expected_bundle_sha256": STR},
                         ["project", "dataset", "repo", "item", "suggestions_file", "expected_bundle_sha256"]),
-    "contextual_prepare": ("Write a contextual model request to a private file from original source only; no model call.",
-                           {**REF, "item": STR, "speakers_file": STR, "out": STR},
+    "contextual_prepare": ("Prepare original speech with speaker roles. Does NOT execute a model; run an explicitly selected adapter next.",
+                           {**REF, "item": STR, "speakers_file": {"type": "string", "description":
+                            "private absolute JSON path: [{id,description}], exact dataset ids and meaningful identity/role context"}, "out": STR},
                            ["project", "dataset", "item", "speakers_file"]),
-    "url": ("A new one-time login link for the owner (works once, within 7 days).",
+    "contextual_resolve": ("Validate an externally executed model's retained response and write a private suggestion bundle; then use suggestions_set.",
+                           {**REF, "request_file": STR, "response_file": STR, "model": STR, "run_id": STR, "out": STR},
+                           ["project", "dataset", "request_file", "response_file", "model", "run_id"]),
+    "url": ("Return a one-time login link only when the dataset is ready; contextual reviews need full speech coverage.",
             {**REF, "item": STR}, ["project", "dataset"]),
-    "status": ("Progress of a dataset: items, ranges, done marks, Finish, commits.", REF, ["project", "dataset"]),
+    "status": ("Dataset readiness for handoff and human progress: items, ranges, done marks, Finish, commits.", REF, ["project", "dataset"]),
     "wait": (f"Wait until the owner presses Finish, at most {WAIT_CAP_S:g} s per call; call again while it "
              "says still_waiting.", {**REF, "timeout_s": NUM}, ["project", "dataset"]),
     "export": ("Write an export under $TL_HOME/exports and return its path and counts, never its text.",
@@ -172,13 +189,15 @@ def call_tool(home: Home, name: str, args: dict) -> dict:
         for key in ("speakers", "modes", "title"):
             if key in args and key in args.get("config", {}) and args[key] != args["config"][key]:
                 raise ToolError(f"{key} and config.{key} disagree")
-        if "reveal" in args:
-            config = dict(body.get("config", {}))
-            if "reveal" in config and config["reveal"] != args["reveal"]:
-                raise ToolError("reveal and config.reveal disagree")
-            body["config"] = {**config, "reveal": args["reveal"]}
+        for key in ("reveal", "review_mode"):
+            if key in args:
+                config = dict(body.get("config", {}))
+                if key in config and config[key] != args[key]:
+                    raise ToolError(f"{key} and config.{key} disagree")
+                body["config"] = {**config, key: args[key]}
         res = client.post("new", body)
-        return {"send_the_owner_this_link": res["url"], **{k: v for k, v in res.items() if k != "url"}}
+        return {**({"send_the_owner_this_link": res["url"]} if "url" in res else {}),
+                **{k: v for k, v in res.items() if k != "url"}}
     if name == "items_add":
         return client.post("items", {"project": project, "dataset": dataset, "repo": calling_repo(args),
                                      "upsert": args.get("upsert", False), "items": [item_spec(args)],
@@ -196,14 +215,33 @@ def call_tool(home: Home, name: str, args: dict) -> dict:
         result = client.get("item", project=project, dataset=dataset, key=args["item"])
         request = build_request(result["item"], read_json_file(str(absolute(args, "speakers_file"))),
                                 unclear=result["config"]["unclear"]["id"])
+        if {s["id"] for s in request["speakers"]} != {s["id"] for s in result["config"]["speakers"]}:
+            raise ToolError("identity file must describe exactly the dataset speaker ids, excluding unclear")
         path = (absolute(args, "out") if "out" in args else home.exports_dir(project, dataset)
                 / f"contextual-{args['item'].replace('/', '-')}-request.json")
         dest = check_text_target(path, False)
         write_private(dest, json.dumps(request, ensure_ascii=False, allow_nan=False, indent=2) + "\n")
-        return {"path": str(dest), **{field: request[field] for field in
+        return {"path": str(dest), "model_executed": False,
+                "next": "Execute an explicitly selected model adapter, validate its result, then suggestions_set and url.",
+                **{field: request[field] for field in
                 ("text_sha256", "token_count", "request_sha256", "prompt_sha256")},
                 "suggestions_sha256": result["item"]["suggestions_sha256"],
                 "suggestion_bundle_sha256": result["suggestion_bundle_sha256"]}
+    if name == "contextual_resolve":
+        from .cli import read_json_file, write_private
+        from .contextual import resolve_response
+        from .textguard import check_text_target
+        bundle = resolve_response(read_json_file(str(absolute(args, "request_file"))),
+                                  read_json_file(str(absolute(args, "response_file"))),
+                                  requested_model=args["model"], run_id=args["run_id"])
+        # Validate project/dataset names and existence before deriving a default path.
+        client.get("status", project=project, dataset=dataset)
+        path = (absolute(args, "out") if "out" in args else home.exports_dir(project, dataset)
+                / f"contextual-{bundle['provenance']['request_sha256']}-suggestions.json")
+        dest = check_text_target(path, False)
+        write_private(dest, json.dumps(bundle, ensure_ascii=False, allow_nan=False, indent=2) + "\n")
+        return {"path": str(dest), "ranges": len(bundle["ranges"]),
+                **{key: bundle["provenance"][key] for key in ("requested_model", "served_model", "model_identity")}}
     if name == "url":
         return client.post("url", {"project": project, "dataset": dataset, "item": args.get("item")})
     if name == "status":

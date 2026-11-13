@@ -27,6 +27,29 @@ def test_defaults_are_filled_in():
                             "review": "review.json"}
 
 
+def test_review_mode_normalizes_visibility_and_remains_optional_for_legacy_manifests(tmp_path):
+    assert "review_mode" not in normalize_config({"speakers": SPEAKERS})
+    for mode, reveal in (("contextual", "always"), ("blind", "after_answer"), ("manual", "always")):
+        config = normalize_config({"speakers": SPEAKERS, "review_mode": mode})
+        assert config["review_mode"] == mode and config["reveal"] == reveal
+        ds = Dataset.create(tmp_path / mode, "demo", mode, config)
+        assert manifest_errors(ds.manifest) == []
+        assert manifest_errors({k: v for k, v in ds.manifest.items() if k != "review_mode"}) == []
+    assert normalize_config({"speakers": SPEAKERS, "review_mode": "manual", "reveal": "after_answer"})["reveal"] == "after_answer"
+
+
+@pytest.mark.parametrize("config,expect", [
+    ({"speakers": SPEAKERS, "review_mode": "contextual", "reveal": "after_answer"}, "review_mode.*reveal"),
+    ({"speakers": SPEAKERS, "review_mode": "blind", "reveal": "always"}, "review_mode.*reveal"),
+    ({"speakers": SPEAKERS, "review_mode": "typo"}, "review_mode"),
+    ({"speakers": SPEAKERS, "review_mode": None}, "review_mode"),
+    ({"speakers": SPEAKERS, "modes": ["captions"], "review_mode": "contextual"}, "speakers mode"),
+])
+def test_review_modes_reject_ambiguous_or_impossible_policies(config, expect):
+    with pytest.raises(SystemExit, match=expect):
+        normalize_config(config)
+
+
 @pytest.mark.parametrize("config,expect", [
     ({}, "needs `speakers`"),
     ({"speakers": SPEAKERS, "bogus": 1}, "unknown dataset config keys"),

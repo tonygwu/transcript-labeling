@@ -64,7 +64,91 @@ def call(env, tool, **args):
 
 def new(env, dataset="call-1"):
     return call(env, "new", project="demo", dataset=dataset, file=str(ZOOM), repo=str(env["checkout"]),
-                create_project=True, speakers=SPEAKERS)
+                create_project=True, speakers=SPEAKERS, review_mode="blind")
+
+
+def test_default_correction_handoff_requires_executed_contextual_suggestions(env):
+    made, bad = call(env, "new", project="demo", dataset="call-1", file=str(ZOOM),
+                     repo=str(env["checkout"]), create_project=True, speakers=SPEAKERS)
+    assert not bad, made
+    assert "send_the_owner_this_link" not in made and "url" not in made
+    assert made["readiness"]["ready"] is False
+    assert made["readiness"]["mode"] == "contextual"
+    blocked, bad = call(env, "url", project="demo", dataset="call-1")
+    assert bad and "contextual" in blocked["error"]
+    identities = env["tmp"] / "identities.json"
+    identities.write_text(json.dumps([{"id": "ann", "description": "Ann Able, candidate"},
+                                      {"id": "bo", "description": "Bo Brand, interviewer"}]))
+    prepared, bad = call(env, "contextual_prepare", project="demo", dataset="call-1", item="item/notes",
+                         speakers_file=str(identities))
+    assert not bad, prepared
+    assert prepared["model_executed"] is False
+    request = json.loads(Path(prepared["path"]).read_text())
+    # Synthetic transport receipt, not an actual provider call.
+    response = env["tmp"] / "response.json"
+    response.write_text(json.dumps({"response": json.dumps({"turns": [{
+        "marker": request["speech"][0]["index"],
+        "first_words": " ".join(w["text"] for w in request["speech"][:8]), "speaker": "ann"}]}),
+        "requested_model": "fixture-model", "served_model": "fixture-model", "model_identity": "reported"}))
+    resolved, bad = call(env, "contextual_resolve", project="demo", dataset="call-1",
+                        request_file=prepared["path"], response_file=str(response),
+                        model="fixture-model", run_id="synthetic-run")
+    assert not bad, resolved
+    assert resolved["model_identity"] == "reported" and resolved["served_model"] == "fixture-model"
+    installed, bad = call(env, "suggestions_set", project="demo", dataset="call-1", item="item/notes",
+                         repo=str(env["checkout"]), suggestions_file=resolved["path"],
+                         expected_bundle_sha256=prepared["suggestion_bundle_sha256"])
+    assert not bad and installed["changed"], installed
+    ready, bad = call(env, "status", project="demo", dataset="call-1")
+    assert not bad and ready["readiness"]["ready"]
+    link, bad = call(env, "url", project="demo", dataset="call-1")
+    assert not bad and "/login#code=" in link["url"]
+    exported, bad = call(env, "export", project="demo", dataset="call-1", kind="spans")
+    assert not bad and exported["counts"] == {"spans": {"items": 0, "ranges": 0}}
+    for value in (made, prepared, resolved, installed, ready, link):
+        assert SECRET_WORD not in json.dumps(value)
+
+
+def test_prepare_rejects_identity_ids_that_disagree_with_review_buttons(env):
+    made, bad = call(env, "new", project="demo", dataset="call-1", file=str(ZOOM),
+                     repo=str(env["checkout"]), create_project=True, speakers=SPEAKERS, reveal="after_answer")
+    assert not bad, made
+    path = env["tmp"] / "identities.json"
+    path.write_text('[{"id":"unknown","description":"Jane Roe, candidate"}]')
+    result, bad = call(env, "contextual_prepare", project="demo", dataset="call-1", item="item/notes",
+                       speakers_file=str(path))
+    assert bad and "dataset speaker ids" in result["error"]
+    assert not env["home"].exports_dir("demo", "call-1").exists()
+
+
+@pytest.mark.parametrize("failure", ["model_substitution", "malformed_response", "git_output"])
+def test_resolve_refuses_bad_results_without_installing_or_handing_off(env, failure):
+    made, bad = call(env, "new", project="demo", dataset="call-1", file=str(ZOOM),
+                     repo=str(env["checkout"]), create_project=True, speakers=SPEAKERS)
+    assert not bad, made
+    identities = env["tmp"] / "identities.json"
+    identities.write_text(json.dumps([{"id": s["id"], "description": s["label"]} for s in SPEAKERS]))
+    prepared, bad = call(env, "contextual_prepare", project="demo", dataset="call-1", item="item/notes",
+                         speakers_file=str(identities))
+    assert not bad, prepared
+    request = json.loads(Path(prepared["path"]).read_text())
+    response = env["tmp"] / "response.json"
+    response.write_text(json.dumps({
+        "response": "not JSON" if failure == "malformed_response" else json.dumps({"turns": [{
+            "marker": request["speech"][0]["index"],
+            "first_words": " ".join(w["text"] for w in request["speech"][:8]), "speaker": "ann"}]}),
+        "requested_model": "fixture-model", "served_model": "other-model" if failure == "model_substitution" else "fixture-model",
+        "model_identity": "reported"}))
+    output = (env["checkout"] if failure == "git_output" else env["tmp"]) / "suggestions.json"
+    result, bad = call(env, "contextual_resolve", project="demo", dataset="call-1",
+                       request_file=prepared["path"], response_file=str(response), model="fixture-model",
+                       run_id="synthetic-run", out=str(output))
+    assert bad, result
+    assert not output.exists()
+    item = env["svc"].dataset("demo", "call-1").item("item/notes")
+    assert item["suggestions"] == []
+    blocked, bad = call(env, "url", project="demo", dataset="call-1")
+    assert bad and "contextual" in blocked["error"]
 
 
 def test_new_exposes_reveal_and_config(env):
@@ -137,11 +221,13 @@ def test_a_stdio_round_trip(env):
                                      "clientInfo": {"name": "test", "version": "0"}})["result"]
         assert init["protocolVersion"] == "2025-03-26" and init["serverInfo"]["name"] == "transcript-labeling"
         send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        assert "Preparation does NOT run a model" in init["instructions"]
+        assert "never hand over a blank correction review" in init["instructions"]
         names = [t["name"] for t in rpc(2, "tools/list")["result"]["tools"]]
-        assert names == ["new", "items_add", "suggestions_set", "contextual_prepare", "url", "status", "wait",
+        assert names == ["new", "items_add", "suggestions_set", "contextual_prepare", "contextual_resolve", "url", "status", "wait",
                          "export", "verify", "schema", "doctor"]
         made, bad, raw = tool(3, "new", project="demo", dataset="call-1", file=str(ZOOM),
-                              repo=str(env["checkout"]), create_project=True, speakers=SPEAKERS)
+                              repo=str(env["checkout"]), create_project=True, speakers=SPEAKERS, review_mode="manual")
         assert not bad and "/login#code=" in made["send_the_owner_this_link"] and SECRET_WORD not in raw
         assert env["svc"].registry.project("demo")["writers"] == ["me/agent"]
         st, bad, _ = tool(4, "status", project="demo", dataset="call-1")

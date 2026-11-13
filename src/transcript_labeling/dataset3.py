@@ -43,12 +43,13 @@ DEFAULT_UNCLEAR = {"id": "unclear", "label": "Unsure", "key": "u"}
 #: When model suggestions may show: only after the item's own answers ("after_answer",
 #: blind-first), or from the start ("always").
 REVEAL = ("after_answer", "always")
+REVIEW_MODES = ("contextual", "manual", "blind")
 CONFIG_KEYS = {"title", "modes", "speakers", "unclear", "mixed_answer", "label_template", "checklist", "reveal",
-               "media", "project_help", "files", "tags"}
+               "media", "project_help", "files", "tags", "review_mode"}
 
 
 #: The settings `normalize_config` always returns, so every manifest `tl` writes holds them.
-WRITTEN_KEYS = CONFIG_KEYS - {"tags"}
+WRITTEN_KEYS = CONFIG_KEYS - {"tags", "review_mode"}
 
 
 def normalize_config(config: dict) -> dict:
@@ -99,9 +100,22 @@ def normalize_config(config: dict) -> dict:
             raise SystemExit(f"REFUSING: {key} has the wrong type ({type(config[key]).__name__})")
     if checklist:
         checklist_errors(checklist, RESERVED_KEYS | set(keys))
-    reveal = config.get("reveal", "after_answer")
+    policy = {}
+    required_reveal = None
+    if "review_mode" in config:
+        mode = config["review_mode"]
+        if mode not in REVIEW_MODES:
+            raise SystemExit(f"REFUSING: review_mode must be one of {REVIEW_MODES}")
+        if mode == "contextual" and "speakers" not in modes:
+            raise SystemExit("REFUSING: contextual review_mode needs the speakers mode")
+        required_reveal = {"contextual": "always", "blind": "after_answer", "manual": None}[mode]
+        policy["review_mode"] = mode
+    default_reveal = "always" if policy.get("review_mode") == "manual" else required_reveal or "after_answer"
+    reveal = config.get("reveal", default_reveal)
     if reveal not in REVEAL:
         raise SystemExit(f"REFUSING: reveal {reveal!r} must be one of {REVEAL}")
+    if required_reveal is not None and reveal != required_reveal:
+        raise SystemExit(f"REFUSING: review_mode {config['review_mode']!r} requires reveal {required_reveal!r}")
     media = config.get("media")
     if media is not None and (not isinstance(media, dict) or set(media) != {"url"}
                               or not str(media["url"]).startswith("https://")):
@@ -125,7 +139,7 @@ def normalize_config(config: dict) -> dict:
     return {"title": config.get("title", ""), "modes": modes, "speakers": speakers, "unclear": unclear,
             "mixed_answer": mixed, "label_template": config.get("label_template"), "checklist": checklist,
             "reveal": reveal, "media": media, "project_help": config.get("project_help", {}),
-            "files": files, **({"tags": tags} if tags else {})}
+            "files": files, **policy, **({"tags": tags} if tags else {})}
 
 
 #: The checklist field types the page can answer. It draws option buttons only, so a

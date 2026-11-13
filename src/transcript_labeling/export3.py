@@ -462,6 +462,7 @@ SCHEMAS = {
                 "unclear": "{id, label, key} (default unclear / Unsure / u)",
                 "mixed_answer": "result of a passage several speakers cover (default mixed)",
                 "checklist": "checklist spec, with the checklist mode", "reveal": "after_answer | always",
+                "review_mode": "contextual | manual | blind; new speaker reviews default to contextual and require full contextual speech coverage before url; absent on legacy datasets",
                 "media": "{url: 'https://...{video_id}...{t}...'} or absent"},
     "answers": {"labels": "{key: checklist answers}", "attribution": "{qid: result derived from spans}",
                 "spans": "{key: {key, text_sha256, token_count, ranges: [{start, end, speaker, origin}], checked_by}}",

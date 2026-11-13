@@ -9,7 +9,7 @@
   POST suggestions {project, dataset, repo, key, suggestions, expected_bundle_sha256}
   GET  item?project=P&dataset=D&key=G/N            source item and review configuration
   POST new       {project, dataset, repo, create_project, speakers, modes, items, ...}
-  POST url       {project, dataset, item?}        a one-time login link for the owner
+  POST url       {project, dataset, item?}        a one-time link only when preparation is ready
 
 An item spec is `{name, text, group?, format?, row?, focus?, suggest_map?, suggestions?}`. The
 server parses the text (`formats.py`), so every client gets the same items.
@@ -26,10 +26,12 @@ import shutil
 import sys
 from urllib.parse import quote
 
-from .dataset3 import Dataset
+from .dataset3 import Dataset, normalize_config
 from .formats import parse, parse_suggest_map, segment_suggestions
 from .items import add_items, make_item
 from .registry import NAME
+from .review import review_readiness
+from .store import locked
 
 ITEM_SPEC = {"name", "text", "group", "format", "row", "focus", "suggest_map", "suggestions", "source"}
 #: The type each item spec field must have, when present (None counts as absent).
@@ -38,9 +40,10 @@ ITEM_SPEC_TYPES = {"name": str, "text": str, "group": str, "format": str, "row":
 
 
 class ApiError(Exception):
-    def __init__(self, code: int, message: str):
+    def __init__(self, code: int, message: str, *, readiness: dict | None = None):
         super().__init__(message)
         self.code = code
+        self.readiness = readiness
 
 
 def _q(query: dict, key: str) -> str:
@@ -101,19 +104,37 @@ def item_entry(ds: Dataset, spec: dict) -> dict:
     return {"item": item, "row": row, "focus": spec.get("focus") or []}
 
 
-def login_link(svc, project: str, dataset: str, item: str | None = None) -> str:
-    target = f"/p/{project}/{dataset}/" + (f"#{quote(item, safe='')}" if item else "")
-    code = svc.auth.mint_code(target)
-    return f"http://127.0.0.1:{svc.port}/login#code={code}"
+def handoff(svc, project: str, dataset: str, item: str | None = None, *, allow_pending: bool = False) -> dict:
+    """Check the entire dataset and mint a link under the writers' dataset lock.
+
+    An item target only changes initial navigation; the owner can open every
+    item from the sidebar. It must not bypass another item's missing proposals.
+    """
+    svc.dataset(project, dataset)  # validate names before deriving a writable lock path
+    with locked(svc.home.state_dir(project, dataset) / ".tl.lock"):
+        ds = svc.dataset(project, dataset)
+        if item is not None and item not in ds.manifest["items"]:
+            raise ApiError(404, "item must name an existing item in this dataset")
+        readiness = review_readiness(ds)
+        if not readiness["ready"]:
+            if allow_pending:
+                return {"readiness": readiness}
+            raise ApiError(409, readiness["reason"], readiness=readiness)
+        target = f"/p/{project}/{dataset}/" + (f"#{quote(item, safe='')}" if item else "")
+        code = svc.auth.mint_code(target)
+        return {"readiness": readiness, "url": f"http://127.0.0.1:{svc.port}/login#code={code}"}
 
 
 def status_view(svc, project: str, dataset: str) -> dict:
-    ds = svc.dataset(project, dataset)
+    svc.dataset(project, dataset)  # validate names before deriving a writable lock path
+    with locked(svc.home.state_dir(project, dataset) / ".tl.lock"):
+        ds = svc.dataset(project, dataset)
+        readiness = review_readiness(ds)
     answers = svc.answers_store(project, dataset, ds).load()
     review = svc.review_store(project, dataset, ds).load()
     events = svc.events(project, dataset).read()
     items = ds.manifest["items"]
-    return {"project": project, "dataset": dataset, "modes": ds.modes, "items": len(items),
+    return {"project": project, "dataset": dataset, "modes": ds.modes, "items": len(items), "readiness": readiness,
             "items_with_ranges": sorted(k for k in answers["spans"] if answers["spans"][k].get("ranges")),
             "items_with_corrections": sorted(answers["corrections"]), "labels": len(answers["labels"]),
             "passages_answered": sum(1 for a in answers["attribution"].values() if a.get("answer")),
@@ -140,7 +161,8 @@ def agent_get(svc, path: str, query: dict) -> tuple[int, dict]:
                 raise ApiError(404, "key must name an existing item in this dataset")
             item = ds.item(key)
             return 200, {"item": item, "suggestion_bundle_sha256": suggestion_bundle_hash(item),
-                         "config": {field: ds.manifest[field] for field in ("speakers", "unclear", "reveal")}}
+                         "config": {field: ds.manifest[field] for field in
+                                    ("speakers", "unclear", "reveal", "review_mode") if field in ds.manifest}}
         if route == "answers":
             project, dataset = _q(query, "project"), _q(query, "dataset")
             ds = svc.dataset(project, dataset)
@@ -152,7 +174,7 @@ def agent_get(svc, path: str, query: dict) -> tuple[int, dict]:
             return 200, handler(svc, query)
         raise ApiError(404, f"no such route: {path}")
     except ApiError as exc:
-        return exc.code, {"error": str(exc)}
+        return exc.code, {"error": str(exc), **({"readiness": exc.readiness} if exc.readiness is not None else {})}
     except SystemExit as exc:
         return 409, {"error": str(exc)}
     except (ValueError, OSError) as exc:  # stored data that no longer fits, or an unreadable file
@@ -211,14 +233,13 @@ def agent_post(svc, path: str, body: dict, client: str) -> tuple[int, dict]:
             return 200, agent_new(svc, body, client)
         if route == "url":
             project, dataset = _need(body, "project", "dataset")
-            svc.dataset(project, dataset)
             item = body.get("item")
             if item is not None and not isinstance(item, str):
                 raise ApiError(400, "item must be an item key")
-            return 200, {"url": login_link(svc, project, dataset, item)}
+            return 200, handoff(svc, project, dataset, item)
         raise ApiError(404, f"no such route: {path}")
     except ApiError as exc:
-        return exc.code, {"error": str(exc)}
+        return exc.code, {"error": str(exc), **({"readiness": exc.readiness} if exc.readiness is not None else {})}
     except SystemExit as exc:
         return 409, {"error": str(exc)}
     except (ValueError, OSError) as exc:
@@ -226,7 +247,7 @@ def agent_post(svc, path: str, body: dict, client: str) -> tuple[int, dict]:
 
 
 def agent_new(svc, body: dict, client: str) -> dict:
-    """Project (if asked), dataset, items and a login link, in one call. Local-only projects only."""
+    """Create a local-only dataset; return preparation status and a link only when ready."""
     project, dataset, repo, items = _need(body, "project", "dataset", "repo", "items")
     if not isinstance(items, list):
         raise ApiError(400, "items must be a list of item specs")
@@ -246,6 +267,10 @@ def agent_new(svc, body: dict, client: str) -> dict:
         _writable(svc, project, repo, client, body.get("owner_override") is True)
         config = {"speakers": body.get("speakers") or [], "modes": body.get("modes") or ["speakers", "captions"],
                   **({"title": body["title"]} if body.get("title") else {}), **(body.get("config") or {})}
+        normalized = normalize_config(config)
+        if "review_mode" not in config:
+            config["review_mode"] = ("manual" if "speakers" not in normalized["modes"] else
+                                     "blind" if config.get("reveal") == "after_answer" else "contextual")
         root = svc.registry.add_dataset(project, dataset)
         existed = root.exists()
         try:
@@ -263,7 +288,7 @@ def agent_new(svc, body: dict, client: str) -> dict:
                 # undo), or the home or registry refused the call: it stays, and the call's own error is raised
                 print(f"new: project {project!r} was not rolled back: {exc}", file=sys.stderr)  # the server log
         raise
-    return {"project": project, "dataset": dataset, **res, "url": login_link(svc, project, dataset)}
+    return {"project": project, "dataset": dataset, **res, **handoff(svc, project, dataset, allow_pending=True)}
 
 
 def _undo_dataset(svc, project: str, dataset: str, root, existed: bool) -> None:

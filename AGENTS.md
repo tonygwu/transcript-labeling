@@ -50,6 +50,9 @@ how the page looks, run it and commit the new picture with the change.
   See `docs/CONTEXTUAL.md` for the source-alignment, private adapter and migration
   contracts. Use `tl suggestions set` to update proposals without replacing
   human state; never put its requests or responses in this public checkout.
+  `tl new` stages speaker correction reviews until contextual suggestions cover
+  all speech. Run an explicitly selected model before `tl url`; use
+  `--review-mode manual|blind` only for intentional manual or blind review.
 
 - **Standard library only at runtime.** `dependencies = []` in `pyproject.toml`
   is checked by `tests/test_package.py`. Test-only tools go in the `dev` dependency group.

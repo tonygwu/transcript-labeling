@@ -85,10 +85,114 @@ def running(tmp_path):
 
 def new_dataset(c, **extra):
     body = {"project": "demo", "dataset": "call-1", "repo": "me/repo", "create_project": True,
+            "config": {"reveal": "after_answer"},
             "speakers": SPEAKERS, "items": [{"name": "one", "text": ZOOM, "group": "call",
                                              "suggest_map": "Ann Able=ann,Bo Brand=bo",
                                              "focus": [{"start": 20, "end": 24, "title": "Budget"}]}], **extra}
     return c.json("POST", "/api/v1/new", body, bearer=True)
+
+
+def test_correction_review_withholds_links_until_every_speech_word_has_contextual_suggestions(tmp_path):
+    with running(tmp_path) as c:
+        status, made = new_dataset(c, config={}, items=[{"name": "one", "text": "Hello there. Yes hello."}])
+        assert status == 200, made
+        assert "url" not in made
+        ready = made["readiness"]
+        assert ready["mode"] == "contextual" and ready["requires_contextual"] and not ready["ready"]
+        assert ready["items"] == [{"key": "item/one", "speech_words": 4, "contextual_words": 0, "ready": False}]
+        assert c.svc.dataset("demo", "call-1").manifest["reveal"] == "always"
+        status, blocked = c.json("POST", "/api/v1/url", {"project": "demo", "dataset": "call-1"}, bearer=True)
+        assert status == 409 and "contextual" in blocked["error"] and blocked["readiness"] == ready
+        status, progress = c.json("GET", "/api/v1/status?project=demo&dataset=call-1", bearer=True)
+        assert status == 200 and progress["readiness"] == ready
+        from transcript_labeling.suggestions import suggestion_bundle_hash
+        ds = c.svc.dataset("demo", "call-1")
+        partial = contextual_bundle(ranges=[{"start": 0, "end": 2, "speaker": "ann", "source": "contextual_model"}])
+        for bundle, expected_ready, coverage in [(partial, False, 2), (contextual_bundle(), True, 4)]:
+            body = {"project": "demo", "dataset": "call-1", "repo": "me/repo", "key": "item/one",
+                    "suggestions": bundle, "expected_bundle_sha256": suggestion_bundle_hash(ds.item("item/one"))}
+            assert c.json("POST", "/api/v1/suggestions", body, bearer=True)[0] == 200
+            status, result = c.json("POST", "/api/v1/url", {"project": "demo", "dataset": "call-1"}, bearer=True)
+            assert status == (200 if expected_ready else 409), result
+            assert result["readiness"]["ready"] is expected_ready
+            assert result["readiness"]["items"][0]["contextual_words"] == coverage
+            assert ("url" in result) is expected_ready
+
+
+def test_source_tag_mapping_does_not_satisfy_contextual_review(tmp_path):
+    with running(tmp_path) as c:
+        status, made = new_dataset(c, config={})
+        assert status == 200 and "url" not in made
+        assert made["readiness"]["items"][0]["contextual_words"] == 0
+        assert c.svc.dataset("demo", "call-1").item("call/one")["suggestions"]
+
+
+def test_targeted_link_checks_every_item_and_new_items_revoke_readiness(tmp_path):
+    with running(tmp_path) as c:
+        status, made = new_dataset(c, config={}, items=[{
+            "name": "one", "text": "Hello there. Yes hello.", "suggestions": contextual_bundle()}])
+        assert status == 200 and made["readiness"]["ready"] and "url" in made
+        status, added = c.json("POST", "/api/v1/items", {"project": "demo", "dataset": "call-1", "repo": "me/repo",
+                              "items": [{"name": "two", "text": "More speech."}]}, bearer=True)
+        assert status == 200, added
+        status, blocked = c.json("POST", "/api/v1/url", {
+            "project": "demo", "dataset": "call-1", "item": "item/one"}, bearer=True)
+        assert status == 409 and not blocked["readiness"]["ready"]
+        assert [row["ready"] for row in blocked["readiness"]["items"]] == [True, False]
+
+
+@pytest.mark.parametrize("mode,reveal", [("manual", "always"), ("blind", "after_answer")])
+def test_explicit_manual_and_blind_reviews_may_start_without_suggestions(tmp_path, mode, reveal):
+    with running(tmp_path) as c:
+        status, made = new_dataset(c, config={"review_mode": mode}, items=[{"name": "one", "text": "Hello there."}])
+        assert status == 200 and "url" in made, made
+        assert made["readiness"]["mode"] == mode and made["readiness"]["ready"]
+        assert not made["readiness"]["requires_contextual"]
+        assert c.svc.dataset("demo", "call-1").manifest["reveal"] == reveal
+
+
+@pytest.mark.parametrize("items", [[], [{"name": "one", "text": "... [music]"}]])
+def test_contextual_review_needs_a_nonempty_dataset_with_speech(tmp_path, items):
+    with running(tmp_path) as c:
+        status, made = new_dataset(c, config={}, items=items)
+        assert status == 200 and "url" not in made and not made["readiness"]["ready"], made
+
+
+def test_unclear_contextual_speech_counts_but_human_answers_stay_empty(tmp_path):
+    bundle = contextual_bundle(ranges=[{"start": 0, "end": 4, "speaker": "unclear", "source": "contextual_model"}])
+    with running(tmp_path) as c:
+        status, made = new_dataset(c, config={}, items=[{
+            "name": "one", "text": "Hello there. Yes hello.", "suggestions": bundle}])
+        assert status == 200 and made["readiness"]["ready"] and "url" in made
+        status, answers = c.json("GET", "/api/v1/answers?project=demo&dataset=call-1", bearer=True)
+        assert status == 200 and answers["spans"] == {} and answers["corrections"] == {}
+
+
+def test_legacy_review_keeps_its_policy_without_rewriting_manifest(tmp_path):
+    with running(tmp_path) as c:
+        status, made = new_dataset(c, config={"review_mode": "manual"}, items=[{"name": "one", "text": "Hello."}])
+        assert status == 200, made
+        ds = c.svc.dataset("demo", "call-1")
+        manifest = {key: value for key, value in ds.manifest.items() if key != "review_mode"}
+        ds.write_manifest(manifest)
+        before = (ds.root / "manifest.json").read_bytes()
+        status, result = c.json("POST", "/api/v1/url", {"project": "demo", "dataset": "call-1"}, bearer=True)
+        assert status == 200 and result["readiness"]["mode"] == "legacy"
+        assert "legacy" in result["readiness"]["reason"]
+        assert (ds.root / "manifest.json").read_bytes() == before
+
+
+def test_corrupt_contextual_evidence_cannot_mint_a_link(tmp_path):
+    with running(tmp_path) as c:
+        status, made = new_dataset(c, config={}, items=[{
+            "name": "one", "text": "Hello there. Yes hello.", "suggestions": contextual_bundle()}])
+        assert status == 200, made
+        ds = c.svc.dataset("demo", "call-1")
+        item = ds.item("item/one")
+        item["suggestion_provenance"]["served_model"] = "substituted-model"
+        ds.item_path("item/one").write_text(json.dumps(item))
+        status, result = c.json("POST", "/api/v1/url", {"project": "demo", "dataset": "call-1"}, bearer=True)
+        assert status == 409 and "url" not in result and "served_model" in result["error"], result
 
 
 def login(c, url):

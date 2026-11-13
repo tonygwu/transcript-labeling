@@ -277,10 +277,12 @@ def cmd_new(args, home: Home) -> int:
     config = read_json_file(args.config) if args.config else {}
     if not isinstance(config, dict):
         raise SystemExit("REFUSING: --config must contain a dataset configuration object")
-    if args.reveal:
-        if "reveal" in config and config["reveal"] != args.reveal:
-            raise SystemExit("REFUSING: --reveal and config.reveal disagree")
-        config["reveal"] = args.reveal
+    for key in ("reveal", "review_mode"):
+        value = getattr(args, key)
+        if value is not None:
+            if key in config and config[key] != value:
+                raise SystemExit(f"REFUSING: --{key.replace('_', '-')} and config.{key} disagree")
+            config[key] = value
     modes = ([m.strip() for m in args.modes.split(",") if m.strip()] if args.modes
              else config.get("modes", ["speakers", "captions"]))
     if not isinstance(modes, list) or not all(isinstance(m, str) for m in modes):
@@ -300,7 +302,12 @@ def cmd_new(args, home: Home) -> int:
     if args.title:
         body["title"] = args.title
     res = ServiceClient(home).post("new", body)
-    print(f"Send the owner this link (it works once, within 7 days):\n{res['url']}")
+    if "url" in res:
+        print(f"Send the owner this link (it works once, within 7 days):\n{res['url']}")
+    else:
+        print("Review staged; do not send a link yet. Prepare speaker-role context, execute an explicitly "
+              "selected model with `tl contextual run`, install its validated bundle with `tl suggestions set`, "
+              "then check `tl status --json` and request `tl url`.")
     print(json.dumps({k: v for k, v in res.items() if k != "url"}, ensure_ascii=False), file=sys.stderr)
     return 0
 
@@ -338,6 +345,8 @@ def cmd_status(args, home: Home) -> int:
     print(f"{project}/{dataset}: {st['items']} items, {len(st['items_with_ranges'])} with ranges, "
           f"{len(st['done'])} done, {st['passages_answered']}/{st['passages']} passages, {st['notes']} notes; "
           f"{'FINISHED' if st['finished'] else 'not finished'}; {st['events']} events logged; commits: {commits}")
+    readiness = st["readiness"]
+    print(f"Handoff: {'ready' if readiness['ready'] else 'blocked'} ({readiness['mode']}). {readiness['reason']}")
     return 0
 
 
@@ -427,7 +436,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("mcp", help="stdio MCP server for Codex (registered in ~/.codex/config.toml)").set_defaults(
         fn=cmd_mcp)
 
-    p = sub.add_parser("new", help="dataset, item and login link in one step (local-only projects)")
+    p = sub.add_parser("new", help="stage a correction review; return a link once contextual suggestions are ready")
     p.add_argument("ref", metavar="PROJECT/DATASET")
     item(p)
     writer(p)
@@ -437,6 +446,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--title")
     p.add_argument("--config", help="dataset configuration JSON, including review policy")
     p.add_argument("--reveal", choices=("after_answer", "always"), help="when suggestions become visible")
+    p.add_argument("--review-mode", choices=("contextual", "manual", "blind"),
+                   help="speaker reviews default to contextual; choose manual or blind only when intentional")
     p.set_defaults(fn=cmd_new)
 
     p = sub.add_parser("project", help="create (git-private) or list projects")

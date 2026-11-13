@@ -25,6 +25,7 @@ check arguments and turn every refusal into a message.
   connections and no framing, `X-Content-Type-Options: nosniff`,
   `Referrer-Policy: no-referrer` and `Cache-Control: no-store`.
 - A refusal is JSON, `{"error": "<what to do>"}`, and closes the connection.
+  A refused contextual review link also includes `readiness` details.
   An unexpected failure is a 500 that names only the exception's type, because
   an exception's text can quote a transcript.
 - A GET must not carry a body.
@@ -45,14 +46,14 @@ mistakes; it is not authentication, because a caller can name any repository.
 
 | Call | Body or query | Returns |
 |---|---|---|
-| `POST new` | `project, dataset, repo, items`; `create_project`, `speakers`, `modes`, `title`, `config` | the dataset, its counts, and `url`, the owner's login link. Local-only projects only. An unknown project is refused unless `create_project: true`, so a typo cannot make a new one. A failure removes the dataset, and the project if this call made it and it holds no dataset by then; a project that stays is named in the server log. |
+| `POST new` | `project, dataset, repo, items`; `create_project`, `speakers`, `modes`, `title`, `config` | the dataset, its counts and review readiness. `url` is present only when the review is ready. Missing contextual suggestions leave a successfully created dataset staged without a login link. Local-only projects only. An unknown project is refused unless `create_project: true`. An actual creation failure removes the dataset, and the project if this call made it and it holds no dataset by then; a project that stays is named in the server log. |
 | `POST projects` | `name, writers, repo`; `title` | the new local-only project. Git-private projects are made with `tl project create` only. |
 | `POST datasets` | `project, dataset, config, repo`; `path` (required for a git-private project) | the dataset's folder |
 | `POST items` | `project, dataset, repo, items`; `upsert` | counts. The whole batch is checked before anything is written. An existing key needs `upsert`, and even then a changed text, changed header ranges or a moved or dropped answered passage under saved answers is refused. |
-| `GET item` | `project, dataset, key` | `{item, config, suggestion_bundle_sha256}`: original source item and `{speakers, unclear, reveal}`. This agent-authenticated response includes current suggestions and history, even during blind review. Keep it private. |
+| `GET item` | `project, dataset, key` | `{item, config, suggestion_bundle_sha256}`: original source item and `{speakers, unclear, reveal}`, plus `review_mode` when stored. This agent-authenticated response includes current suggestions and history, even during blind review. Keep it private. |
 | `POST suggestions` | `project, dataset, repo, key, suggestions, expected_bundle_sha256` | `{key, changed, suggestions, suggestions_sha256, suggestion_bundle_sha256}`: replace one item's contextual drafts under the dataset lock. Preserve source, catalog, human answers, corrections, notes, reveals, Done and Finish. |
-| `POST url` | `project, dataset`; `item` | `url`, a new one-time login link |
-| `GET status` | `project, dataset` | items, items with ranges or corrections, done marks, passages answered, notes, reveals, Finish state, the event count, and the commit state |
+| `POST url` | `project, dataset`; `item` | `url`, a new one-time login link. Refuses an unready contextual review, including when `item` names an individually ready item. |
+| `GET status` | `project, dataset` | review readiness, items, items with ranges or corrections, done marks, passages answered, notes, reveals, Finish state, the event count, and the commit state |
 | `GET answers` | `project, dataset` | the answers with passage results derived from the ranges, plus `review` (notes, done marks, reveals, Finish) |
 | `GET export` | `project, dataset, kind`; `no_text` (`1`, `true`, `0`, `false`), `fill` (`suggestions`) | one export, or all of them for `kind=all` |
 | `GET verify` | `project, dataset`; `expect_answers_sha256` | a report of every check; `ok` is true only when all passed |
@@ -68,6 +69,61 @@ detected when absent), `row` (catalog fields such as `title` and `person`),
 `suggest_map`) and `source` (an object kept with the item, such as the file
 name; its `format` is always the parser's). `GET schema?name=item` lists every
 field.
+
+### Review modes and readiness
+
+`POST new` chooses `config.review_mode: "contextual"` when the dataset includes
+speaker review and the caller has not selected a mode. Contextual reviews use
+`reveal: "always"`. Creation does not run a model. Until every item's speech
+has validated contextual suggestions, the dataset remains staged and no login
+link is returned. A bundle supplied with the new items can make it ready at
+creation time.
+
+| `config.review_mode` | Intended use | Suggestions and reveal policy |
+|---|---|---|
+| `contextual` | Correct model-proposed speakers | Full contextual speech coverage is required before a link is issued; suggestions show immediately. |
+| `manual` | Intentionally label without a model prerequisite | Suggestions are optional; the default reveal policy is `always`. |
+| `blind` | Make an independent judgment before seeing suggestions | Suggestions are optional and use `after_answer`; reveal requires a saved range. |
+
+If the caller omits `review_mode` but explicitly requests `reveal: "after_answer"`,
+`new` selects blind mode for compatibility. Caption or checklist tasks without
+speaker review default to manual mode. Incompatible contextual or blind reveal
+policies are refused. Existing datasets and the low-level `POST datasets`
+operation retain their earlier behavior when `review_mode` is absent; there is
+no automatic migration.
+
+Contextual readiness requires source-aligned suggestions with contextual
+provenance. Imported tags from `suggest_map` do not satisfy it. Every speech
+token needs coverage; the configured uncertain speaker is a valid model
+proposal. Coverage does not establish accuracy or human agreement. A request
+file alone does not establish that inference ran, and the service cannot
+independently attest to a caller's model claim.
+An empty dataset or an item without speech remains unready for contextual review.
+
+`status` and `new` include a `readiness` object:
+
+```json
+{
+  "mode": "contextual",
+  "requires_contextual": true,
+  "ready": false,
+  "reason": "<explanation of readiness>",
+  "items": [
+    {"key": "calls/example", "speech_words": 24, "contextual_words": 0, "ready": false}
+  ]
+}
+```
+
+`mode` is `contextual`, `manual`, `blind`, or `legacy` for a dataset without a
+stored review mode. `url` checks the whole
+dataset because an item link still allows sidebar navigation. If new items
+are added without contextual suggestions, requesting another link is refused
+until they are ready. Existing browser sessions are not revoked by this check.
+
+If inference or validation fails, report that error and leave the review
+staged. Never fabricate model provenance, label every word uncertain merely to
+pass the check, or switch to manual mode to conceal failure. Manual and blind
+modes are choices for the owner's task, not recovery paths for failed inference.
 
 Export kinds: `spans` (the owner's ranges), `segments` (each caption split where
 the owner's ranges split it), `focus` (passage results), `corrections`,
@@ -117,7 +173,7 @@ Ranges must be ordered, non-overlapping and contain speech tokens only. The
 resolver splits turns around caption metadata, timestamps and other non-speech
 tokens. A range cannot silently claim those tokens. Every speaker must be in
 the dataset, including its configured uncertain speaker. Missing speech stays
-unassigned; an uncertain suggestion is distinct from an original Unknown tag
+unassigned and prevents a contextual review link; an uncertain suggestion is distinct from an original Unknown tag
 and from the owner's Unsure answer. Ranges may also carry string `turn_id` and
 `reason` fields. They cannot carry a human origin.
 
@@ -188,7 +244,8 @@ note then fails still returns 200, with a `warning`.
 tl init | serve | doctor | mcp
 tl new P/D --from-file PATH [--create-project] [--speakers "id=Label:key,..."] [--suggest-map ...]
            [--focus FILE] [--modes speakers,captions] [--name N] [--group G]
-           [--config FILE] [--reveal always|after_answer] [--suggestions FILE]
+           [--config FILE] [--review-mode contextual|manual|blind]
+           [--reveal always|after_answer] [--suggestions FILE]
 tl project create NAME --git-checkout ABS_PATH [--writer REPO ...] [--branch B]
 tl project list | tl dataset list
 tl dataset create P/D --config FILE [--path REL]
@@ -201,6 +258,13 @@ tl verify P/D [--expect-answers-sha256 H] | tl schema item|dataset|answers|expor
 
 - A write names the calling repository with `--repo owner/name`, or takes it
   from the `origin` of the checkout `tl` runs in.
+- `tl new` stages a contextual speaker review by default. Complete the
+  [prepare, model execution, validation and attachment steps](CONTEXTUAL.md)
+  before `tl url` can return a link. `--review-mode manual` and
+  `--review-mode blind` preserve intentional manual and blind tasks.
+  Staged creation exits 0 because creation succeeded and prints
+  `Review staged; do not send a link yet.` Requesting its link is refused
+  with HTTP 409 until the review is ready.
 - `tl wait` exits 0 once the owner pressed Finish and 3 on timeout (2 is a
   usage error).
 - Exports of a local-only project go to `$TL_HOME/exports/<project>/<dataset>/`
@@ -214,22 +278,51 @@ tl verify P/D [--expect-answers-sha256 H] | tl schema item|dataset|answers|expor
 
 ## MCP tools (`tl mcp`)
 
-`new`, `items_add`, `suggestions_set`, `contextual_prepare`, `url`, `status`,
+`new`, `items_add`, `suggestions_set`, `contextual_prepare`, `contextual_resolve`, `url`, `status`,
 `wait`, `export`, `verify`, `schema` and `doctor`. Paths are absolute: `file`,
-`focus_file`, `suggestions_file`, `speakers_file`, `out`, and `repo`, which is the
+`focus_file`, `suggestions_file`, `speakers_file`, `request_file`, `response_file`,
+`out`, and `repo`, which is the
 caller's own checkout. `wait` returns `still_waiting` after at most 50 seconds;
 call it again. `export` writes under `$TL_HOME/exports/` and returns the path,
 size and counts, never the text. MCP calls cannot write git-private projects.
 
-`new` accepts `config` and `reveal: "always" | "after_answer"`. If both specify
-a reveal policy, they must agree. Correction reviews can show suggestions from
-the start with `always`; blind evaluation keeps the default `after_answer`.
+`new` accepts `config`, `review_mode: "contextual" | "manual" | "blind"`, and
+`reveal: "always" | "after_answer"`. If a direct argument and `config` both
+specify a setting, they must agree. Speaker reviews default to contextual
+mode. Until ready, the response contains no `send_the_owner_this_link` field.
+Do not ask the owner to start labeling a staged correction review.
 
 `contextual_prepare` takes `project`, `dataset`, `item`, and `speakers_file`.
-The speaker file holds identity descriptions for the model, separate from UI
-labels such as Me and Interviewer. This tool writes a request from the original
-source to a private file and returns its path and hashes. It runs no model and
-includes no human labels or caption corrections. Optional `out` selects the
-private destination. After an external model runner and the resolver produce a
-validated envelope, `suggestions_set` takes `project`, `dataset`, `item`, `repo`,
-`suggestions_file` and `expected_bundle_sha256` to install it.
+The speaker file is a JSON list of `{id, description}` objects. It must name
+exactly the dataset's speaker IDs, excluding the separate uncertain entry, with
+clear identity and conversational role descriptions. UI labels such as Me and
+Interviewer alone may not identify who those people are. This tool writes a
+request from original source to a private file and returns its path and hashes,
+including the current `suggestion_bundle_sha256`. It returns
+`model_executed: false`, runs no model and includes no human labels or caption
+corrections. Optional `out` selects the private destination.
+
+Run the prepared prompt through the owner's approved model and transport.
+`tl contextual run` supports an explicit model and adapter; an external runner
+can instead retain the response envelope described in [CONTEXTUAL.md](CONTEXTUAL.md).
+If no model or transport is approved, obtain that choice before sending private
+text. Neither preparation nor successful process exit proves a model executed
+correctly. Inspect the full raw response and its reported identity.
+
+`contextual_resolve` takes `project`, `dataset`, private `request_file` and
+`response_file` paths, the explicitly selected `model`, and a `run_id`. It validates
+the retained model response and writes the suggestion bundle. It does not call
+a model. A reported model substitution or invalid source alignment is an error.
+Optional `out` chooses a private destination; the default is
+`$TL_HOME/exports/<project>/<dataset>/contextual-<request_sha256>-suggestions.json`.
+The response contains `path`, `ranges`, `requested_model`, `served_model`, and
+`model_identity`, never transcript text.
+`tl contextual run` already performs resolution after a successful adapter call.
+
+`suggestions_set` takes `project`, `dataset`, `item`, `repo`, `suggestions_file`
+and `expected_bundle_sha256` to install the validated bundle. Use the digest
+captured by `contextual_prepare` or `GET item`; a conflicting update requires
+inspection, not a forced overwrite. This operation preserves all human edits
+and review history. Repeat preparation, execution, validation and attachment
+for every item, inspect `status`, then call `url` and send the successful link.
+After the owner finishes, use `wait` or `status`, `export`, then `verify`.

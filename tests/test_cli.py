@@ -66,7 +66,7 @@ def test_the_whole_flow(tl, capsys, tmp_path):
     capsys.readouterr()
     assert tl("new", "demo/call-1", "--from-file", str(ZOOM), "--create-project", "--repo", "me/repo",
               "--speakers", "ann=Ann Able:1,bo=Bo Brand:2", "--suggest-map", "Ann Able=ann,Bo Brand=bo",
-              "--group", "call") == 0
+              "--group", "call", "--review-mode", "manual") == 0
     out = capsys.readouterr().out
     assert "http://127.0.0.1:" in out and "/login#code=" in out and SECRET_WORD not in out
     assert tl("url", "demo/call-1", "--item", "call/notes") == 0
@@ -90,6 +90,28 @@ def test_the_whole_flow(tl, capsys, tmp_path):
     assert json.loads(capsys.readouterr().out)["name"] == "item"
     assert tl("dataset", "list") == 0
     assert json.loads(capsys.readouterr().out) == ["demo/call-1"]
+
+
+def test_default_new_stages_and_url_cannot_bypass_contextual_preparation(tl, capsys):
+    capsys.readouterr()
+    assert tl("new", "demo/call-1", "--from-file", str(ZOOM), "--create-project",
+              "--repo", "me/repo", *SPEAKERS) == 0
+    output = capsys.readouterr()
+    assert "Review staged; do not send a link yet" in output.out
+    assert "/login#code=" not in output.out + output.err
+    assert json.loads(output.err.splitlines()[-1])["readiness"]["ready"] is False
+    refusal = tl("url", "demo/call-1")
+    assert "contextual" in str(refusal)
+    assert tl("status", "demo/call-1") == 0
+    assert "Handoff: blocked (contextual)" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("mode,reveal", [("manual", "always"), ("blind", "after_answer")])
+def test_new_explicit_review_modes_keep_intentional_blank_reviews(tl, capsys, mode, reveal):
+    assert tl("new", "demo/call-1", "--from-file", str(ZOOM), "--create-project",
+              "--repo", "me/repo", *SPEAKERS, "--review-mode", mode) == 0
+    assert "/login#code=" in capsys.readouterr().out
+    assert tl.svc.dataset("demo", "call-1").manifest["reveal"] == reveal
 
 
 def test_a_write_names_the_calling_repository(tl, capsys, tmp_path):

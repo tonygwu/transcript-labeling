@@ -4,10 +4,51 @@ This workflow proposes speakers from the whole conversation, checks each turn
 against the original words, and lets a person correct the result. A proposal
 never becomes a human label until the person confirms or changes it.
 
+New speaker reviews use this workflow by default. `new` creates the dataset,
+but withholds its login link until contextual suggestions cover every item's
+speech. Preparing a request does not execute inference. The agent must
+explicitly run an approved model, validate its response, attach its suggestions
+and check readiness before asking the owner to review.
+
 The original text is the coordinate system. Whitespace tokens include source
 headers and timestamps, but only speech tokens can receive contextual
 suggestions. Grouping captions on the page does not change the text, token
 positions, original intervals, or correction overlays.
+
+## Create the review before handing it over
+
+```sh
+tl new project/review --from-file /private/data/original.txt --create-project \
+  --name example --group calls --speakers "jane=Jane Roe:1,sam=Sam Poe:2"
+```
+
+Without a ready contextual bundle, this creates `calls/example`, exits 0, and
+prints `Review staged; do not send a link yet.` The equivalent MCP `new`
+response has no `send_the_owner_this_link`. Both return readiness information
+so the agent can identify missing contextual coverage. If a validated bundle
+is already available, pass `--suggestions PRIVATE_FILE` or MCP
+`suggestions_file` when creating the review.
+
+For MCP callers, the complete sequence is:
+
+1. Call `new`, then `contextual_prepare` with the staged item's key and a
+   private file describing every speaker's identity and role.
+2. Run the prepared prompt through an explicitly selected, approved model and
+   transport. Use `tl contextual run` or an external runner. No MCP preparation
+   tool performs this call for you.
+3. If the external runner has not already resolved the result, call
+   `contextual_resolve` with the retained request and response. Inspect the raw
+   response and model identity evidence before using the bundle.
+4. Call `suggestions_set` with the validated bundle and the suggestion bundle
+   digest captured during preparation. Repeat these steps for every item.
+5. Check `status.readiness.ready`, call `url`, and send the successful link.
+   After the owner finishes, export the labels and run `verify`.
+
+If no model or transport has been approved, ask for that choice before sending
+private text. If execution, identity validation, alignment or attachment fails,
+report the error and keep the dataset staged. Never invent suggestions, fill
+everything with uncertainty just to pass readiness, or switch to manual mode
+to hide a failed model run. Genuine model uncertainty is a valid suggestion.
 
 ## Prepare a private request
 
@@ -17,7 +58,8 @@ including ignored paths. The model receives original speech and supplied
 speaker identities. Existing suggestions, focus passages, corrections and
 human labels are excluded by an explicit field allowlist.
 
-Write a private speaker identity file, using the dataset's actual speaker ids:
+Write a private speaker identity file, using exactly the dataset's actual
+speaker ids, excluding its separate uncertain entry:
 
 ```json
 [
@@ -26,10 +68,13 @@ Write a private speaker identity file, using the dataset's actual speaker ids:
 ]
 ```
 
-The identities are recording metadata, not a mapping of transcriber tags.
-Names and roles are configurable; neither interviews nor two speakers are
-hardcoded. Configure the review labels separately as `Me` and `Interviewer`
-with keys `1` and `2`, and use the uncertainty entry with key `u`.
+Describe each person's identity and conversational role using known recording
+metadata. For example, explain who is interviewing whom; a UI label such as
+`Me` alone does not identify that person to the model. Do not infer identities
+from transcriber tags. Names and roles are configurable; neither interviews
+nor two speakers are hardcoded. Review labels and keyboard shortcuts are
+configured separately. The default uncertainty entry is `unclear`, labeled
+`Unsure`, with key `u`.
 
 ```sh
 tl contextual prepare --from-file /private/data/original.txt \
@@ -41,7 +86,10 @@ For an existing item, use `--item-file /private/data/item.json` instead. This
 preserves its source geometry. The authenticated `GET /api/v1/item` route
 returns `{item, config, suggestion_bundle_sha256}`; write only its `item` field to that file. MCP
 `contextual_prepare` reads the existing item and writes the request privately,
-returning its path and hashes rather than text.
+returning its path and hashes rather than text. It checks the speaker IDs
+against the dataset, returns `model_executed: false`, and includes the current
+`suggestion_bundle_sha256` for the later update. Save that digest. This is a
+prepared request, not model output.
 
 The request contains all speech. There is no length cap, chunking, source-tag
 prior, or minimum turn length. Markers occur every 20 speech words; each turn
@@ -113,6 +161,14 @@ If another application already runs the model, it can use
 --out ...` or import `build_request` and `resolve_response` from
 `transcript_labeling.contextual`. Raw artifacts allow offline re-resolution.
 
+MCP `contextual_resolve` provides the same offline validation. It takes
+`project`, `dataset`, absolute private `request_file` and `response_file` paths,
+the explicitly selected `model`, and `run_id`. Optional `out` chooses the private
+bundle path; otherwise the tool writes under the dataset's private exports
+directory. It returns the path, range count and selected versus reported model
+identity. It performs no model call. A reported model mismatch is rejected;
+`unverified` means the transport did not establish the served model's identity.
+
 ## Validate and attach suggestions
 
 The resolver requires a unique, case-sensitive, punctuation-sensitive anchor
@@ -142,7 +198,8 @@ An importable bundle has this shape:
 
 New item specs accept this under `suggestions`, mutually exclusive with
 `suggest_map`. The latter remains a deterministic source-tag mapping and uses
-`source: segment_label`. Existing items use a separate operation:
+`source: segment_label`; it neither runs inference nor makes a contextual review
+ready. Existing items use a separate operation:
 
 ```sh
 tl suggestions set project/review --item calls/example \
@@ -150,10 +207,11 @@ tl suggestions set project/review --item calls/example \
   --expected-bundle-sha256 CURRENT_DIGEST
 ```
 
-Read suggestion_bundle_sha256 from `GET /api/v1/item`. The update checks source
+Use `suggestion_bundle_sha256` from preparation or `GET /api/v1/item`. The update checks source
 hash, token count, speaker ids, ordered non-overlapping speech ranges and the
 current bundle digest, including provenance, while holding the dataset lock. A competing
-update fails; repeating the identical completed update is a no-op. Only the
+update fails and requires inspection; do not force an overwrite. Repeating the
+identical completed update is a no-op. Only the
 item's suggestion fields change. Earlier bundles are retained so human
 confirmations can still refer to the suggestions they saw. Human answers,
 corrections, notes, reveal events, focus passages and review completion state
@@ -168,10 +226,30 @@ retaining draft history cannot reconstruct those missing historical links.
 
 ## Review and export
 
-Choose `reveal: always` for correction work or `after_answer` for blind review.
-Both CLI `new` and MCP `new` expose this choice. Under `after_answer`, the
-owner can reveal after saving at least one range; this does not mean the
-whole item has been reviewed.
+New speaker reviews default to `review_mode: contextual` and `reveal: always`.
+After suggestions are attached, inspect readiness and request the link:
+
+```sh
+tl status project/review --json
+tl url project/review
+```
+
+`readiness` reports the mode, whether contextual suggestions are required,
+whether the dataset is ready, a reason, and each item's speech and contextual
+word counts. The URL operation checks the entire dataset, even for an item
+link, because the owner can navigate to other items. If coverage is missing,
+the dataset is empty, or an item has no speech, it refuses with HTTP 409.
+Only send a successfully returned link. Existing
+browser sessions are not revoked by this check.
+
+Choose `--review-mode manual` or MCP `review_mode: "manual"` for intentional
+manual labeling without a model prerequisite. Choose `blind` for independent
+review with optional suggestions hidden by `reveal: after_answer`. Under that
+policy the owner can reveal after saving at least one range; this does not mean
+the whole item has been reviewed. If `new` receives an explicit `after_answer`
+without a review mode, it selects blind mode for compatibility. Manual mode
+defaults to `always`. Neither manual nor blind mode requires contextual
+coverage before a link is issued.
 
 Conversation view groups consecutive speech by its displayed speaker and
 provenance. Human marks take precedence. Source labels only group otherwise
@@ -195,10 +273,18 @@ provenance that could contain it.
 
 ## Migrate existing callers
 
-Keep current imports working while replacing their model boundary one caller
-at a time. Existing `suggest_map`, sidecar construction, ranges and correction
-exports remain available. No consumer is silently switched to a new model or
-prompt, and the old inference implementation is not removed by this change.
+Existing datasets retain their stored reveal policy and human state. They are
+not migrated to contextual mode. Low-level dataset creation without a
+`review_mode` also retains its earlier behavior. New datasets created through
+`new` default to contextual mode when speaker review is enabled, so callers
+must handle staged creation and complete inference before requesting a link.
+Caption and checklist tasks without speaker review default to manual mode.
+
+Existing `suggest_map`, sidecar construction, ranges and correction exports
+remain available. A caller that deliberately uses manual or blind review
+should select that mode explicitly. No consumer is silently switched to a new
+model or prompt, and the old inference implementation is not removed by this
+change.
 
 For a version-2 sidecar, supply its original text alongside tokens, hash,
 count and header ranges to `build_request`. Preserve the original uncertain
