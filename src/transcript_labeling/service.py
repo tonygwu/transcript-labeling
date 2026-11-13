@@ -59,6 +59,8 @@ from .store import SECTIONS, DatasetStore, EventLog, ReviewStore, StaleWrite, st
 from .tokens import item_kinds
 
 MAX_BODY = 256 * 1024
+# A span/correction save contains one recording's complete annotation.
+MAX_ANSWER_BODY = 8 * 1024 * 1024
 MAX_AGENT_BODY = 32 * 1024 * 1024
 # How much of a refused body is read and thrown away before the refusal is sent.
 # Answering with unread bytes in the socket makes the kernel send a reset, and the
@@ -190,8 +192,8 @@ def make_handler(svc: Service):
                 length = 0  # unreadable: read nothing; the connection closes all the same
             self._drain(length)
 
-        def _drain(self, length: int) -> None:
-            left = min(max(length, 0), DRAIN_LIMIT)
+        def _drain(self, length: int, limit: int = DRAIN_LIMIT) -> None:
+            left = min(max(length, 0), limit)
             while left > 0:
                 chunk = self.rfile.read(min(left, 64 * 1024))
                 if not chunk:
@@ -212,13 +214,13 @@ def make_handler(svc: Service):
         def _bearer(self) -> bool:
             return token_ok(self.headers.get("Authorization"), svc.token)
 
-        def _body(self, cap: int) -> dict:
+        def _body(self, cap: int, *, drain_limit: int = DRAIN_LIMIT) -> dict:
             try:
                 length = int(self.headers.get("Content-Length") or 0)
             except ValueError:
                 raise Refused(400, "unreadable Content-Length")
             if length <= 0 or length > cap:
-                self._drain(length)
+                self._drain(length, drain_limit)
                 raise Refused(400, f"body must be 1..{cap} bytes, got {length}")
             raw = self.rfile.read(length)
             try:  # strict, as every stored file is read: no repeated key, NaN or Infinity
@@ -369,7 +371,11 @@ def make_handler(svc: Service):
                 # Browser-only writes: the bearer token is not enough, by design.
                 self._drain_body()
                 raise Refused(401, "answers, notes, reveals and done marks need a browser session")
-            msg = self._body(MAX_BODY)
+            # Only authenticated answer writes get the larger cap and drain bound.
+            # Drain at most twice the cap so modest oversize saves receive JSON
+            # refusals instead of socket resets; other routes keep their bounds.
+            msg = (self._body(MAX_ANSWER_BODY, drain_limit=2 * MAX_ANSWER_BODY)
+                   if rest == "/api/answer" else self._body(MAX_BODY))
             ds = svc.dataset(project, dataset)
             handler = {"/api/answer": post_answer, "/api/note": post_note, "/api/reveal": post_reveal,
                        "/api/done": post_done}[rest]
