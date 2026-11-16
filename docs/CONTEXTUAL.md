@@ -1,8 +1,9 @@
 # Contextual speaker review
 
-This workflow proposes speakers from the whole conversation, checks each turn
-against the original words, and lets a person correct the result. A proposal
-never becomes a human label until the person confirms or changes it.
+This workflow proposes speakers and evidence-supported text corrections from
+the whole conversation. It checks proposals against the original words and
+lets a person accept, reject or edit them. A proposal never becomes a human
+label or changes the reading text until the person accepts or edits it.
 
 New speaker reviews use this workflow by default. `new` creates the dataset,
 but withholds its login link until contextual suggestions cover every item's
@@ -111,7 +112,7 @@ It must return this envelope on stdout, preserving the model response string:
 
 ```json
 {
-  "response":"{\"turns\":[{\"marker\":0,\"first_words\":\"exact starting words\",\"speaker\":\"jane\"}]}",
+  "response":"{\"turns\":[{\"marker\":0,\"first_words\":\"exact starting words\",\"speaker\":\"jane\"}],\"text_corrections\":[]}",
   "requested_model":"chosen-model",
   "served_model":null,
   "model_identity":"unverified",
@@ -182,10 +183,11 @@ An importable bundle has this shape:
 
 ```json
 {
-  "schema_version":1,
+  "schema_version":2,
   "text_sha256":"64 lowercase hex characters",
   "token_count":123,
   "ranges":[{"start":4,"end":9,"speaker":"jane","source":"contextual_model"}],
+  "text_suggestions":[],
   "provenance":{
     "method":"contextual_speaker_turns",
     "requested_model":"chosen-model","served_model":null,"model_identity":"unverified",
@@ -212,7 +214,7 @@ hash, token count, speaker ids, ordered non-overlapping speech ranges and the
 current bundle digest, including provenance, while holding the dataset lock. A competing
 update fails and requires inspection; do not force an overwrite. Repeating the
 identical completed update is a no-op. Only the
-item's suggestion fields change. Earlier bundles are retained so human
+item's speaker and text suggestion fields change. Earlier bundles are retained so human
 confirmations can still refer to the suggestions they saw. Human answers,
 corrections, notes, reveal events, focus passages and review completion state
 remain unchanged. History is never sent to the browser, including blind mode.
@@ -281,7 +283,49 @@ contains only `speakers`. Existing service-managed speaker reviews gain the
 controls without changing their stored modes or answers. If the task
 intentionally excludes text editing, use `tl new --no-text-corrections` or
 `text_corrections: false` in config or MCP `new`. This choice does not change
-speaker suggestions, readiness or reveal behavior.
+speaker suggestions, readiness or reveal behavior. MCP preparation reads this
+policy from the dataset. For standalone file preparation, pass
+`tl contextual prepare --no-text-corrections` when the target opts out. Import
+and update refuse nonempty text proposals for an opted-out dataset.
+
+### Review model text proposals
+
+With text correction enabled, the model response must contain both `turns` and
+`text_corrections`, even when the latter is empty. A correction contains exactly
+`marker`, `first_words`, `original`, `replacement` and `reason`. The marker and
+anchor follow the same exact original-word rules as a speaker turn. `original`
+is the complete source tokens to replace, joined by single spaces. The resolver
+derives source offsets and refuses ambiguous anchors, mismatched words, metadata,
+overlaps, unchanged replacements, or replacements outside the editor's existing
+1–4000 character limit. No correction is inferred by the resolver itself.
+
+The prompt asks for the smallest supported correction. It can use a clear
+self-introduction and known participant metadata, but must leave ambiguous
+names and wording unchanged. Expected eval answers never enter the prompt.
+The [text-correction eval](../evals/text_corrections/README.md) checks a supplied
+name mismatch, a correct-name control and an ambiguous-name control.
+
+The page shows **Model text proposals** with the original wording, replacement
+and reason. Until accepted, a proposal does not change either transcript view.
+**Accept text change** saves a human-confirmed correction with
+`origin: model_confirmed`, the exact suggestion bundle digest and proposal index.
+**Reject text change** records the decision without applying the proposal. Both
+decisions survive reloads. Text proposals obey the same blind reveal policy as
+speaker proposals. A new bundle never changes saved decisions or edits.
+
+Acceptance refuses an overlap with any saved human text correction. Review that
+edit manually instead. A changed proposal bundle or a correction saved in another
+window requires a reload. A reviewed proposal cannot be reviewed twice. To undo
+an accepted change, use **Restore original**; to change it, use **Edit correction**.
+Decision history records the earlier acceptance even if the wording later changes.
+An edited replacement is a manual correction; an unchanged accepted replacement
+retains its model provenance. Speaker ranges and source offsets never move.
+
+`corrections` exports, including within `all`, contain the accepted reading text,
+edit provenance, decision records and history. Unaccepted proposals appear only
+in `suggestions`, including retained bundles. Speaker/segment exports retain
+original source wording. Correction reading exports normalize whitespace as
+before. `--no-text` omits proposal wording and reasons as well as corrected text.
 
 Imported tags, contextual guesses and human reviews are labeled separately.
 Confirming a contextual guess saves `model_confirmed`; confirming an imported
@@ -296,6 +340,14 @@ appear as human ground truth. `--no-text` omits transcript text and free-form
 provenance that could contain it.
 
 ## Migrate existing callers
+
+New prepared requests and resolved bundles use schema version 2. Re-prepare
+pending requests after this prompt change; stale requests fail validation.
+Version-1 speaker-only bundles remain importable and existing stored data needs
+no migration. When correction is enabled, callers must supply the required
+`text_corrections` response list. When disabled, that field is prohibited and
+the resolved bundle has an empty `text_suggestions` list. No model is executed
+automatically, and existing reviews are not repopulated automatically.
 
 Existing datasets retain their stored reveal policy and human state. They are
 not migrated to contextual mode. Low-level dataset creation without a

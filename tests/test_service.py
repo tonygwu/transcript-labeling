@@ -247,6 +247,73 @@ def versions(c):
     return answers["versions"]
 
 
+def text_bundle():
+    bundle = contextual_bundle()
+    return {**bundle, "schema_version": 2, "text_suggestions": [{"start": 0, "end": 1,
+        "original": "Hello", "replacement": "Greetings", "reason": "Synthetic correction example.",
+        "source": "contextual_model"}]}
+
+
+def test_text_proposals_follow_blind_reveal_and_reject_stale_reviews(tmp_path):
+    from transcript_labeling.suggestions import suggestion_bundle_hash
+    with running(tmp_path) as c:
+        status, made = new_dataset(c, items=[{"name": "one", "text": "Hello there. Yes hello.",
+                                              "suggestions": text_bundle()}])
+        assert status == 200, made
+        login(c, made["url"])
+        ds = c.svc.dataset("demo", "call-1")
+        item = ds.item("item/one")
+        common = {k: item[k] for k in ("key", "text_sha256", "token_count")}
+        action = {"bundle_sha256": suggestion_bundle_hash(item), "index": 0, "decision": "accepted"}
+        msg = {"kind": "corrections", "id": "item/one", "versions": versions(c),
+               "value": {**common, "revision": 0, "proposal_action": action}}
+        status, hidden = c.json("GET", "/p/demo/call-1/api/transcript?key=item/one")
+        assert status == 200 and "text_suggestions" not in hidden and "suggestion_history" not in hidden
+        status, refused = c.json("POST", "/p/demo/call-1/api/answer", msg)
+        assert status == 409 and "reveal" in refused["error"]
+        assert c.json("POST", "/p/demo/call-1/api/answer", {"kind": "spans", "id": "item/one",
+            "versions": versions(c), "value": {**common, "ranges": [{"start": 0, "end": 4,
+            "speaker": "bo", "origin": "human"}]}})[0] == 200
+        status, revealed = c.json("POST", "/p/demo/call-1/api/reveal", {"key": "item/one", "versions": versions(c)})
+        assert status == 200 and revealed["text_suggestions"] == item["text_suggestions"]
+        before = ds.answers.read_bytes()
+        bundle = text_bundle()
+        bundle["text_suggestions"][0]["replacement"] = "Welcome"
+        status, _ = c.json("POST", "/api/v1/suggestions", {"project": "demo", "dataset": "call-1",
+            "repo": "me/repo", "key": "item/one", "suggestions": bundle,
+            "expected_bundle_sha256": suggestion_bundle_hash(item)}, bearer=True)
+        assert status == 200 and ds.answers.read_bytes() == before
+        status, stale = c.json("POST", "/p/demo/call-1/api/answer", msg)
+        assert status == 409 and "changed" in stale["error"]
+        assert ds.answers.read_bytes() == before
+        action["bundle_sha256"] = suggestion_bundle_hash(ds.item("item/one"))
+        status, accepted = c.json("POST", "/p/demo/call-1/api/answer", msg)
+        assert status == 200, accepted
+        assert accepted["correction"]["edits"][0]["replacement"] == "Welcome"
+        assert accepted["correction"]["edits"][0]["origin"] == "model_confirmed"
+        after = c.json("GET", "/p/demo/call-1/api/answers")[1]
+        assert after["spans"]["item/one"]["ranges"][0]["speaker"] == "bo"
+
+
+def test_text_opt_out_rejects_import_and_update(tmp_path):
+    from transcript_labeling.suggestions import suggestion_bundle_hash
+    with running(tmp_path) as c:
+        config = {"text_corrections": False, "review_mode": "manual"}
+        status, refused = new_dataset(c, config=config, items=[{"name": "one", "text": "Hello there. Yes hello.",
+                                                                "suggestions": text_bundle()}])
+        assert status == 400 and "disabled" in refused["error"]
+        status, made = new_dataset(c, dataset="disabled", config=config,
+                                  items=[{"name": "one", "text": "Hello there. Yes hello."}])
+        assert status == 200, made
+        ds = c.svc.dataset("demo", "disabled")
+        status, response = c.json("GET", "/api/v1/item?project=demo&dataset=disabled&key=item/one", bearer=True)
+        assert status == 200 and response["config"]["text_corrections"] is False
+        status, refused = c.json("POST", "/api/v1/suggestions", {"project": "demo", "dataset": "disabled",
+            "repo": "me/repo", "key": "item/one", "suggestions": text_bundle(),
+            "expected_bundle_sha256": suggestion_bundle_hash(ds.item("item/one"))}, bearer=True)
+        assert status == 409 and "disabled" in refused["error"]
+
+
 def contextual_bundle(text="Hello there. Yes hello.", ranges=None):
     from transcript_labeling.tokens import text_hash, tokenize
     return {"schema_version": 1, "text_sha256": text_hash(text), "token_count": len(tokenize(text)),

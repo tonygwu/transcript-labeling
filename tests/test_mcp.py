@@ -88,7 +88,7 @@ def test_default_correction_handoff_requires_executed_contextual_suggestions(env
     response = env["tmp"] / "response.json"
     response.write_text(json.dumps({"response": json.dumps({"turns": [{
         "marker": request["speech"][0]["index"],
-        "first_words": " ".join(w["text"] for w in request["speech"][:8]), "speaker": "ann"}]}),
+        "first_words": " ".join(w["text"] for w in request["speech"][:8]), "speaker": "ann"}], "text_corrections": []}),
         "requested_model": "fixture-model", "served_model": "fixture-model", "model_identity": "reported"}))
     resolved, bad = call(env, "contextual_resolve", project="demo", dataset="call-1",
                         request_file=prepared["path"], response_file=str(response),
@@ -136,7 +136,7 @@ def test_resolve_refuses_bad_results_without_installing_or_handing_off(env, fail
     response.write_text(json.dumps({
         "response": "not JSON" if failure == "malformed_response" else json.dumps({"turns": [{
             "marker": request["speech"][0]["index"],
-            "first_words": " ".join(w["text"] for w in request["speech"][:8]), "speaker": "ann"}]}),
+            "first_words": " ".join(w["text"] for w in request["speech"][:8]), "speaker": "ann"}], "text_corrections": []}),
         "requested_model": "fixture-model", "served_model": "other-model" if failure == "model_substitution" else "fixture-model",
         "model_identity": "reported"}))
     output = (env["checkout"] if failure == "git_output" else env["tmp"]) / "suggestions.json"

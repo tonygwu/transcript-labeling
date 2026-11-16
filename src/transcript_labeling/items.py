@@ -78,6 +78,12 @@ def item_errors(item: dict, speakers: list[str]) -> list[str]:
             if r is not None and not (isinstance(r, list) and len(r) == 2 and all(type(x) is int for x in r)
                                       and 0 <= r[0] <= r[1] <= len(toks)):
                 errs.append(f"segment {f} {r!r} is outside the text")
+    if "text_suggestions" in item or "suggestion_schema_version" in item:
+        from .suggestions import validate_stored_suggestions
+        try:
+            validate_stored_suggestions(item, speakers)
+        except ValueError as exc:
+            errs.append(str(exc))
     return errs
 
 
@@ -177,6 +183,8 @@ def add_items(ds: Dataset, state_dir: Path, entries: list[dict], *, upsert: bool
             key = item["key"]
             ds.item_path(key)  # validates the key shape
             problems += [f"{key}: {p}" for p in item_errors(item, speakers)]
+            if item.get("text_suggestions") and "captions" not in ds.modes:
+                problems.append(f"{key}: text corrections are disabled for this dataset")
             if key in manifest["items"]:
                 if not upsert:
                     problems.append(f"{key}: already in the dataset; pass --upsert to replace it")

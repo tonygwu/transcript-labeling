@@ -98,6 +98,8 @@ def item_entry(ds: Dataset, spec: dict) -> dict:
         from .suggestions import apply_bundle
         try:
             item = apply_bundle(item, spec["suggestions"], ds.speaker_ids())
+            if item.get("text_suggestions") and "captions" not in ds.modes:
+                raise ValueError("text corrections are disabled for this dataset")
         except ValueError as exc:
             raise ApiError(400, str(exc)) from exc
     row = {"title": name, **(spec.get("row") or {})}
@@ -161,8 +163,9 @@ def agent_get(svc, path: str, query: dict) -> tuple[int, dict]:
                 raise ApiError(404, "key must name an existing item in this dataset")
             item = ds.item(key)
             return 200, {"item": item, "suggestion_bundle_sha256": suggestion_bundle_hash(item),
-                         "config": {field: ds.manifest[field] for field in
-                                    ("speakers", "unclear", "reveal", "review_mode") if field in ds.manifest}}
+                         "config": {"text_corrections": "captions" in ds.modes,
+                                    **{field: ds.manifest[field] for field in
+                                    ("speakers", "unclear", "reveal", "review_mode") if field in ds.manifest}}}
         if route == "answers":
             project, dataset = _q(query, "project"), _q(query, "dataset")
             ds = svc.dataset(project, dataset)

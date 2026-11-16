@@ -854,7 +854,7 @@ console.log(JSON.stringify(data));
 """)
     assert got == {"suggestions": [{"start": 0, "end": 1, "speaker": "ann"}], "suggestions_hidden": 0,
                    "suggestions_sha256": "new", "suggestion_bundle_sha256": "bundle",
-                   "suggestion_provenance": {"run_id": "new"}}
+                   "suggestion_provenance": {"run_id": "new"}, "text_suggestions": []}
 
 
 def test_legacy_absent_evidence_stays_absent_after_later_saves():

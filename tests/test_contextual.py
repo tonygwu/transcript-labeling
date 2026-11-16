@@ -23,7 +23,7 @@ def request(text="Hello there yes how are you today fine thanks goodbye", **kwar
 
 
 def response(turns, model="example-model"):
-    return {"response": json.dumps({"turns": turns}), "requested_model": model,
+    return {"response": json.dumps({"turns": turns, "text_corrections": []}), "requested_model": model,
             "served_model": None, "model_identity": "unverified", "transport": {"adapter": "test"}}
 
 

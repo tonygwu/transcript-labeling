@@ -70,6 +70,14 @@ under a lock without replacing human state or focus passages, and retains prior
 suggestion bundles. See [CONTEXTUAL.md](CONTEXTUAL.md) for the model-adapter and
 migration contracts. Conversation view changes presentation only.
 
+Contextual inference can also propose exact source-anchored text replacements.
+These remain separate from the reading until the owner accepts them. Acceptance
+saves a correction with the original token bounds and exact bundle evidence;
+rejection saves a decision without an edit. Existing human edits are preserved,
+and an overlapping proposal cannot replace them. Text proposals obey correction
+opt-out and blind reveal policy. Accepted reading text is available in correction
+exports; unaccepted proposals and retained drafts remain suggestion exports.
+
 New speaker reviews default to contextual correction mode. Dataset creation
 stages the source, and link creation requires validated contextual suggestions
 for every speech word across every item. Readiness checks do not confirm labels
