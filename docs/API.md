@@ -169,13 +169,14 @@ The same JSON object works in a new item spec, `POST suggestions`,
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "text_sha256": "<SHA256 of the exact original UTF-8 text>",
   "token_count": 4,
   "ranges": [
     {"start": 0, "end": 2, "speaker": "a", "source": "contextual_model"},
     {"start": 2, "end": 4, "speaker": "unclear", "source": "contextual_model"}
   ],
+  "text_suggestions": [],
   "provenance": {
     "method": "contextual_speaker_turns",
     "requested_model": "example-model",
@@ -207,10 +208,10 @@ source identity; it does not attest to the truth of a caller's model claim.
 
 Read `GET item` before updating and send its
 `suggestion_bundle_sha256` as `expected_bundle_sha256`. If another writer
-changed the ranges or provenance, the update returns 409. This bundle digest
-includes both; the separate item.suggestions_sha256 still identifies only the
+changed the speaker ranges, text proposals or provenance, the update returns
+409. This bundle digest includes all three; item.suggestions_sha256 still identifies only the
 ranges cited by existing human annotations. An exact retry of the already
-installed ranges and provenance returns `changed: false` without rewriting
+installed bundle returns `changed: false` without rewriting
 the file or duplicating history. The original text hash and token count are
 checked again under the lock. Historical bundles retain their exact suggestion
 hashes so existing human confirmations remain traceable. Updating suggestions
@@ -231,7 +232,24 @@ Legacy imports using only `suggest_map` keep their existing behavior. The
 Its `no_text` form omits source metadata, model names, run identifiers, reasons
 and transport details; full provenance exports belong in private storage.
 
+Version 2 requires `text_suggestions`, an ordered non-overlapping list with
+`start`, `end`, `original`, `replacement`, `reason`, and `source: contextual_model`.
+Its source token ranges must contain speech only and match `original` exactly.
+Version 1 speaker-only envelopes remain accepted. Nonempty text proposals are
+refused when text correction is disabled. Current and retained proposals export
+separately from human corrections; `--no-text` removes wording and reasons.
+
 ## The browser
+
+For a text proposal decision, `POST /api/answer` uses `kind: "corrections"` and
+the usual item identity and `revision`, with `proposal_action` instead of `edits`:
+`{"bundle_sha256":"<current bundle digest>","index":0,"decision":"accepted"}`.
+`decision` can also be `rejected`. The server checks the current bundle under the
+dataset lock, refuses hidden or already-reviewed proposals, and refuses accepting
+an overlap with a saved human text correction. It constructs the accepted edit
+itself, retaining `origin: model_confirmed`, `suggestion_bundle_sha256` and
+`suggestion_index`. Manual saves cannot forge that evidence. Decisions and history
+are server-owned and exported with corrections. Rejection applies no text change.
 
 | Route | Who | Does |
 |---|---|---|
@@ -339,7 +357,10 @@ Interviewer alone may not identify who those people are. This tool writes a
 request from original source to a private file and returns its path and hashes,
 including the current `suggestion_bundle_sha256`. It returns
 `model_executed: false`, runs no model and includes no human labels or caption
-corrections. Optional `out` selects the private destination.
+corrections. Optional `out` selects the private destination. Preparation reads
+the dataset's effective `text_corrections` boolean from `GET item` and requests
+text proposals only when enabled. The standalone file CLI has
+`--no-text-corrections` for intentional speaker-only preparation.
 
 Run the prepared prompt through the owner's approved model and transport.
 `tl contextual run` supports an explicit model and adapter; an external runner

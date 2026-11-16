@@ -427,6 +427,8 @@ def transcript_view(ds: Dataset, item: dict, review: dict) -> dict:
     view = {k: v for k, v in item.items() if k not in ("text", "suggestion_history")}
     view["token_kinds"] = item_kinds(item)
     view["suggestions_hidden"] = 0 if revealed else len(item.get("suggestions", []))
+    if not revealed or "captions" not in ds.modes:
+        view.pop("text_suggestions", None)
     if not revealed:
         view["suggestions"] = []
         view.pop("suggestion_provenance", None)
@@ -481,7 +483,16 @@ def post_answer(svc: Service, project: str, dataset: str, ds: Dataset, msg: dict
     def change(answers: dict) -> dict:
         new = value
         if kind == "corrections":
-            new = update_corrections(value, answers["corrections"].get(ident), transcript)
+            # This callback runs under the same dataset lock as suggestion updates.
+            current_ds = Dataset.open(ds.root)
+            if "captions" not in current_ds.modes:
+                raise ValueError("text corrections are disabled for this dataset")
+            current = current_ds.item(ident)
+            if "proposal_action" in value:
+                review = svc.review_store(project, dataset, current_ds).load()
+                if current_ds.manifest["reveal"] == "after_answer" and ident not in review["reveals"]:
+                    raise ValueError("reveal suggestions before reviewing text proposals")
+            new = update_corrections(value, answers["corrections"].get(ident), current)
         if kind == "labels":
             new = keep_assisted(value, answers["labels"].get(ident))
         stored["value"] = new
@@ -546,6 +557,8 @@ def post_reveal(svc, project, dataset, ds, msg):
     return 200, {"ok": True, "reveal": review["reveals"][key],
                  "suggestions": item.get("suggestions", []), "suggestions_sha256": item["suggestions_sha256"],
                  "suggestion_bundle_sha256": suggestion_bundle_hash(item),
+                 **({"text_suggestions": item["text_suggestions"]}
+                    if "text_suggestions" in item and "captions" in ds.modes else {}),
                  **({"suggestion_provenance": item["suggestion_provenance"]}
                     if "suggestion_provenance" in item else {})}, "reveal", key, False, sha
 

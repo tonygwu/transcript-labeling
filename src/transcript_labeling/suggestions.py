@@ -29,6 +29,9 @@ def suggestions_hash(ranges: list[dict]) -> str:
 def suggestion_bundle_hash(item: dict) -> str:
     """Compare-and-swap identity includes provenance as well as the proposed ranges."""
     return text_hash(json.dumps({"suggestions": item["suggestions"],
+                                **({"text_suggestions": item["text_suggestions"],
+                                    "schema_version": item["suggestion_schema_version"]}
+                                   if "text_suggestions" in item else {}),
                                 "provenance": item.get("suggestion_provenance")}, sort_keys=True))
 
 
@@ -39,10 +42,14 @@ def _sha(value, field: str) -> None:
 
 def validate_bundle(bundle: dict, item: dict, speakers: list[str]) -> None:
     """Refuse stale offsets, guessed provenance, conflicting ranges and metadata labels."""
-    if not isinstance(bundle, dict) or set(bundle) != ENVELOPE_KEYS:
-        raise ValueError(f"suggestions must have exactly {sorted(ENVELOPE_KEYS)}")
-    if type(bundle["schema_version"]) is not int or bundle["schema_version"] != 1:
-        raise ValueError("suggestions schema_version must be 1")
+    if not isinstance(bundle, dict):
+        raise ValueError("suggestions must be an object")
+    version = bundle.get("schema_version")
+    if type(version) is not int or version not in (1, 2):
+        raise ValueError("suggestions schema_version must be 1 or 2")
+    keys = ENVELOPE_KEYS | ({"text_suggestions"} if version == 2 else set())
+    if set(bundle) != keys:
+        raise ValueError(f"suggestions must have exactly {sorted(keys)}")
     _sha(bundle["text_sha256"], "text_sha256")
     if type(bundle["token_count"]) is not int or bundle["token_count"] < 1:
         raise ValueError("suggestions token_count must be a positive integer")
@@ -93,6 +100,16 @@ def validate_bundle(bundle: dict, item: dict, speakers: list[str]) -> None:
             if field in span and (not isinstance(span[field], str) or not span[field].strip()):
                 raise ValueError(f"suggestion range {index} {field} must be a non-empty string")
         end = b
+    if version == 2:
+        from .corrections import validate_edits
+        validate_edits(bundle["text_suggestions"], item)
+        for proposal in bundle["text_suggestions"]:
+            if set(proposal) != {"start", "end", "original", "replacement", "reason", "source"}:
+                raise ValueError("text suggestions need exactly start, end, original, replacement, reason, source")
+            if proposal["source"] != "contextual_model":
+                raise ValueError("text suggestions must have source contextual_model")
+            if not isinstance(proposal["reason"], str) or not proposal["reason"].strip():
+                raise ValueError("text suggestion reason must be nonempty text")
     try:
         json.dumps(bundle, ensure_ascii=False, allow_nan=False).encode("utf-8")
     except (ValueError, TypeError) as exc:
@@ -109,11 +126,19 @@ def apply_bundle(item: dict, bundle: dict, speakers: list[str], *, remember: boo
                  "suggestion_bundle_sha256": suggestion_bundle_hash(item)}
         if "suggestion_provenance" in item:
             prior["suggestion_provenance"] = item["suggestion_provenance"]
+        for key in ("text_suggestions", "suggestion_schema_version"):
+            if key in item:
+                prior[key] = item[key]
         history.append(prior)
         result["suggestion_history"] = history
     result.update(suggestions=bundle["ranges"], suggestion_provenance=bundle["provenance"],
                   suggestions_sha256=suggestions_hash(bundle["ranges"]),
                   suggestion_scope="Contextual suggestions over source-aligned speech; unmarked speech stays unknown.")
+    if bundle["schema_version"] == 2:
+        result.update(text_suggestions=bundle["text_suggestions"], suggestion_schema_version=2)
+    else:
+        result.pop("text_suggestions", None)
+        result.pop("suggestion_schema_version", None)
     return result
 
 
@@ -127,6 +152,10 @@ def validate_stored_suggestions(item: dict, speakers: list[str]) -> None:
             raise ValueError("stored suggestions must be a list in each bundle")
         if not all(isinstance(r, dict) for r in snapshot["suggestions"]):
             raise ValueError("each stored suggestion must be an object")
+        if ("text_suggestions" in snapshot or "suggestion_schema_version" in snapshot) and (
+                "text_suggestions" not in snapshot or snapshot.get("suggestion_schema_version") != 2
+                or "suggestion_provenance" not in snapshot):
+            raise ValueError("stored text proposals require version 2, text_suggestions and provenance")
         _sha(snapshot.get("suggestions_sha256"), "stored suggestions_sha256")
         if snapshot["suggestions_sha256"] != suggestions_hash(snapshot["suggestions"]):
             raise ValueError("stored suggestions differ from their hash")
@@ -135,7 +164,9 @@ def validate_stored_suggestions(item: dict, speakers: list[str]) -> None:
             if snapshot["suggestion_bundle_sha256"] != suggestion_bundle_hash(snapshot):
                 raise ValueError("historical bundle differs from its hash")
         if "suggestion_provenance" in snapshot:
-            validate_bundle({"schema_version": 1, "text_sha256": item["text_sha256"],
+            validate_bundle({"schema_version": snapshot.get("suggestion_schema_version", 1),
+                             **({"text_suggestions": snapshot["text_suggestions"]}
+                                if "text_suggestions" in snapshot else {}), "text_sha256": item["text_sha256"],
                              "token_count": item["token_count"], "ranges": snapshot["suggestions"],
                              "provenance": snapshot["suggestion_provenance"]}, item, speakers)
 
@@ -161,8 +192,9 @@ def update_suggestions(ds: Dataset, state_dir: Path, key: str, bundle: dict, exp
         if errors:
             raise ValueError("existing item is invalid: " + "; ".join(errors))
         replacement = apply_bundle(item, bundle, ds.speaker_ids())
-        same = (item["suggestions"] == replacement["suggestions"]
-                and item.get("suggestion_provenance") == replacement["suggestion_provenance"])
+        if bundle.get("text_suggestions") and "captions" not in ds.modes:
+            raise ValueError("text corrections are disabled for this dataset")
+        same = suggestion_bundle_hash(item) == suggestion_bundle_hash(replacement)
         if same:
             return {"key": key, "changed": False, "suggestions": len(item["suggestions"]),
                     "suggestions_sha256": item["suggestions_sha256"],

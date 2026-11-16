@@ -45,7 +45,7 @@ INSTRUCTIONS = (
     "it is ready call url and send the owner the link. If setup, inference or validation fails, report the "
     "failure and keep the review staged; never hand over a blank correction review or silently switch modes. "
     "Use review_mode manual or blind only when intentional; blind hides suggestions until the owner answers. "
-    "Text correction is enabled by default for speaker reviews, including modes ['speakers']; "
+    "Contextual inference also proposes reviewable text corrections by default for speaker reviews, including modes ['speakers']; "
     "set text_corrections false only for an intentional opt-out. "
     "suggest_map only maps source tags and does not perform contextual inference. After handoff: wait or "
     "status, export, verify. Transcripts, requests, responses and exports stay outside every Git checkout; "
@@ -78,7 +78,7 @@ TOOLS = {
                         {**REF, "repo": ITEM["repo"], "item": STR, "suggestions_file": ITEM["suggestions_file"],
                          "expected_bundle_sha256": STR},
                         ["project", "dataset", "repo", "item", "suggestions_file", "expected_bundle_sha256"]),
-    "contextual_prepare": ("Prepare original speech with speaker roles. Does NOT execute a model; run an explicitly selected adapter next.",
+    "contextual_prepare": ("Prepare speaker and text proposals from original speech and speaker roles, respecting text-correction opt-out. Does NOT execute a model; run an explicitly selected adapter next.",
                            {**REF, "item": STR, "speakers_file": {"type": "string", "description":
                             "private absolute JSON path: [{id,description}], exact dataset ids and meaningful identity/role context"}, "out": STR},
                            ["project", "dataset", "item", "speakers_file"]),
@@ -218,7 +218,8 @@ def call_tool(home: Home, name: str, args: dict) -> dict:
         from .textguard import check_text_target
         result = client.get("item", project=project, dataset=dataset, key=args["item"])
         request = build_request(result["item"], read_json_file(str(absolute(args, "speakers_file"))),
-                                unclear=result["config"]["unclear"]["id"])
+                                unclear=result["config"]["unclear"]["id"],
+                                text_corrections=result["config"]["text_corrections"])
         if {s["id"] for s in request["speakers"]} != {s["id"] for s in result["config"]["speakers"]}:
             raise ToolError("identity file must describe exactly the dataset speaker ids, excluding unclear")
         path = (absolute(args, "out") if "out" in args else home.exports_dir(project, dataset)

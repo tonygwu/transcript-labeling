@@ -116,6 +116,7 @@ function applyRevealedSuggestions(data,res){
  data.suggestions=res.suggestions;data.suggestions_hidden=0;
  data.suggestions_sha256=res.suggestions_sha256;
  data.suggestion_bundle_sha256=res.suggestion_bundle_sha256;
+ data.text_suggestions=res.text_suggestions||[];
  if(res.suggestion_provenance)data.suggestion_provenance=res.suggestion_provenance;
  else delete data.suggestion_provenance;
  delete data.draftStates;

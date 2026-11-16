@@ -18,7 +18,7 @@ def setup(tmp_path):
     item = make_item("calls/example", "Hello there how are you today yes fine thanks goodbye")
     req = build_request(item, [{"id": "speaker", "description": "Jane Roe"}], unclear="unclear")
     raw = json.dumps({"turns": [{"marker": 0, "first_words": "Hello there how are you today yes fine",
-                                "speaker": "speaker"}]})
+                                "speaker": "speaker"}], "text_corrections": []})
     envelope = {"response": raw, "requested_model": "test-model", "served_model": None,
                 "model_identity": "unverified"}
     script = tmp_path / "adapter.py"

@@ -189,6 +189,59 @@ def wait_for(page, check, what, timeout_s=10.0):
 
 
 @THEMES
+@pytest.mark.parametrize("decision", ["accepted", "rejected"])
+def test_model_text_proposals_review_and_export(svc, browser, shots, scheme, decision):
+    from transcript_labeling.contextual import build_request, resolve_response
+    text = "Um, my name is Jan."
+    source = make_item("call/one", text)
+    request = build_request(source, [{"id": "ann", "description": "Jane Roe, interview participant"},
+                                     {"id": "bo", "description": "Bo Brand, interviewer"}], unclear="unclear")
+    bundle = resolve_response(request, {
+        "response": json.dumps({"turns": [{"marker": 0, "first_words": text, "speaker": "ann"}],
+                                "text_corrections": [{"marker": 0, "first_words": "Jan.", "original": "Jan.",
+                                    "replacement": "Jane.", "reason": "Self-introduction and participant metadata."}]}),
+        "requested_model": "fixture-model", "served_model": "fixture-model", "model_identity": "reported"
+    }, requested_model="fixture-model", run_id="synthetic-browser")
+    url = new_dataset(svc, "text-proposals", [{"name": "one", "text": text, "group": "call", "suggestions": bundle}],
+                      config={"review_mode": "contextual"})
+    ds = svc.dataset("demo", "text-proposals")
+    original = ds.item("call/one")
+    ctx, page, errors, failed = open_page(browser, scheme)
+    login(page, url)
+    open_item(page, "call/one")
+    area = page.locator(".span-transcript")
+    assert area.locator('[data-w="4"]').inner_text().strip() == "Jan."
+    assert page.locator(".text-proposals").inner_text().startswith("Model text proposals")
+    drag_words(page, 0, 3)
+    paint(page, "ann")
+    drag_words(page, 4, 4)
+    paint(page, "bo")
+    wait_for(page, lambda: len(spans_of(svc, "text-proposals", "call/one")) == 2, "human speaker marks")
+    before = spans_of(svc, "text-proposals", "call/one")
+    page.screenshot(path=shots / f"20-text-proposed-{scheme}.png", full_page=True)
+    page.click(f'[data-text-proposal="0"][data-decision="{decision}"]')
+    page.wait_for_selector('[data-text-proposal]', state="detached")
+    expected = "Jane." if decision == "accepted" else "Jan."
+    assert area.locator('[data-w="4"]').inner_text().strip() == expected
+    assert spans_of(svc, "text-proposals", "call/one") == before
+    assert ds.item("call/one") == original
+    page.reload()
+    page.wait_for_selector(".span-transcript [data-w]")
+    assert area.locator('[data-w="4"]').inner_text().strip() == expected
+    page.click('[data-transcript-view="source"]')
+    assert area.locator('[data-w="4"]').inner_text().strip() == expected
+    exported = export_dataset(ds, "all")
+    correction = exported["corrections"]["call/one"]
+    assert correction["corrected_text"] == f"Um, my name is {expected}"
+    assert correction["proposal_decisions"][0]["decision"] == decision
+    assert correction["edits"] == [] if decision == "rejected" else correction["edits"][0]["origin"] == "model_confirmed"
+    assert ds.item("call/one") == original
+    page.screenshot(path=shots / f"21-text-{decision}-{scheme}.png", full_page=True)
+    assert not errors and not failed, (errors, failed)
+    ctx.close()
+
+
+@THEMES
 def test_the_zoom_flow(svc, browser, shots, scheme):
     others = [{"name": f"extra-{n}", "text": f"A short plain talk number {n}, with a few words.", "group": "call"}
               for n in range(6)]

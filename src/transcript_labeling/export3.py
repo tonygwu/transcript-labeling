@@ -49,7 +49,8 @@ FOCUS_KEEP = ("qid", "key", "start", "end", "answer", "review_status", "unreview
 CORRECTION_KEEP = ("key", "text_sha256", "token_count", "revision", "checked_by", "updated_at",
                    "corrected_text_sha256")
 HISTORY_KEEP = ("revision", "updated_at", "checked_by")
-EDIT_KEEP = ("start", "end")
+EDIT_KEEP = ("start", "end", "origin", "suggestion_bundle_sha256", "suggestion_index")
+DECISION_KEEP = ("bundle_sha256", "index", "decision")
 NOTE_KEEP = ("id", "where", "updated_at")
 
 
@@ -75,7 +76,11 @@ def _no_text(kind: str, data, ds: Dataset):
         def edits(es):
             return [_pick(e, EDIT_KEEP) for e in es]
         return {k: {**_pick(v, CORRECTION_KEEP), "edits": edits(v.get("edits", [])),
+                    **({"proposal_decisions": [_pick(d, DECISION_KEEP) for d in v["proposal_decisions"]]}
+                       if "proposal_decisions" in v else {}),
                     "history": [{**_pick(h, HISTORY_KEEP), "before": edits(h.get("before", [])),
+                                 **({"proposal_action": _pick(h["proposal_action"], DECISION_KEEP)}
+                                    if "proposal_action" in h else {}),
                                  "after": edits(h.get("after", []))} for h in v.get("history", [])]}
                 for k, v in data.items()}
     if kind == "labels":
@@ -98,6 +103,9 @@ def _no_text(kind: str, data, ds: Dataset):
             result = {"suggestions_sha256": value["suggestions_sha256"],
                       "suggestion_bundle_sha256": value["suggestion_bundle_sha256"],
                       "suggestions": [suggestion(r) for r in value["suggestions"]]}
+            if "text_suggestions" in value:
+                result.update(suggestion_schema_version=value["suggestion_schema_version"],
+                              text_suggestions=[_pick(p, ("start", "end", "source")) for p in value["text_suggestions"]])
             if "suggestion_provenance" in value:
                 result["suggestion_provenance"] = _pick(value["suggestion_provenance"],
                     ("method", "model_identity", "prompt_sha256", "request_sha256", "response_sha256"))
@@ -302,7 +310,7 @@ def _suggestions(ds, answers, review, fill):
         item = ds.item(key)
         validate_stored_suggestions(item, ds.speaker_ids())
         result[key] = {**_pick(item, ("text_sha256", "token_count", "source", "suggestions_sha256",
-                                     "suggestions", "suggestion_provenance")),
+                                     "suggestions", "suggestion_provenance", "text_suggestions", "suggestion_schema_version")),
                        "suggestion_bundle_sha256": suggestion_bundle_hash(item),
                        "suggestion_history": item.get("suggestion_history", [])}
     return result
@@ -452,7 +460,7 @@ SCHEMAS = {
              "focus": "optional passages: [{start, end} or {char_start, char_end}, title?, why?, question?, id?, "
                       "context?: [start, end]]",
              "suggest_map": "optional 'Label=speaker_id,...': imported segment-label suggestions",
-             "suggestions": "optional envelope {schema_version:1,text_sha256,token_count,ranges,provenance}; "
+             "suggestions": "optional envelope {schema_version:2,text_sha256,token_count,ranges,text_suggestions,provenance}; version 1 speaker-only bundles remain supported; "
                             "mutually exclusive with suggest_map. Ranges are ordered non-overlapping speech-only "
                             "{start,end,speaker,source:'contextual_model'} offsets. See docs/API.md for provenance.",
              "source": "optional object kept with the item, such as the file name; its format is always the "

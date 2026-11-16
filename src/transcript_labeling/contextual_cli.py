@@ -64,7 +64,8 @@ def prepare(args, home):
         parsed = parse(text, args.format)
         item = make_item("source/transcript", text, segments=parsed["segments"], meta=parsed["meta"])
     request = build_request(item, _read(args.speakers_file), unclear=args.unclear,
-                            marker_every=args.marker_every, anchor_words=args.anchor_words)
+                            marker_every=args.marker_every, anchor_words=args.anchor_words,
+                            text_corrections=not args.no_text_corrections)
     _write(args.out, request)
     print(canonical({"request": str(Path(args.out).resolve()), "request_sha256": request["request_sha256"],
                      "text_sha256": request["text_sha256"], "speech_words": len(request["speech"]),
@@ -195,6 +196,7 @@ def register(sub):
     prep.add_argument("--unclear", required=True, help="the dataset's uncertain speaker id")
     prep.add_argument("--marker-every", type=int, default=MARKER_EVERY)
     prep.add_argument("--anchor-words", type=int, default=ANCHOR_WORDS)
+    prep.add_argument("--no-text-corrections", action="store_true", help="intentionally propose speakers only")
     prep.add_argument("--out", required=True)
     prep.set_defaults(fn=prepare)
     resolved = commands.add_parser("resolve", help="validate a retained response and produce an import bundle")

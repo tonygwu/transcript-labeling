@@ -20,7 +20,7 @@ function correctionPanel(recording,index,lo,hi){
  const id=recording.key+":"+index,form=correctionForms[id];
  const edits=editsFor(recording).filter(e=>e.start<hi&&e.end>lo);
  const error=correctionErrors[recording.key],busy=correctionPending[recording.key];
- return `${form?`<div class="correction-form">
+ return `${textProposalPanel(recording,lo,hi)}${form?`<div class="correction-form">
   <b>Correct the captions</b><p class="sub">Original: ${esc(form.original)}</p>
   <label>What was actually said?<textarea data-corrected-text rows="2" ${busy?"disabled":""}>${esc(form.text)}</textarea></label>
   <div class="opts"><button class="opt" type="button" data-save-correction ${busy?"disabled":""}>${busy?"Saving…":"Save correction"}</button><button class="opt" type="button" data-cancel-correction ${busy?"disabled":""}>Cancel</button></div>
@@ -28,8 +28,20 @@ function correctionPanel(recording,index,lo,hi){
   ${error?`<p class="status err" role="alert">Correction not saved: ${esc(error)}</p>`:""}
   ${busy&&!form?'<p class="status">Saving correction…</p>':""}
   ${edits.length?`<details class="text-corrections"><summary>${edits.length} text correction${edits.length===1?"":"s"} in view · saved locally</summary>
-   ${edits.map(e=>`<div class="text-correction"><div><del>${esc(e.original)}</del> → <strong>${esc(e.replacement)}</strong></div><div class="opts"><button class="opt" type="button" data-edit-correction="${e.start},${e.end}">Edit correction</button><button class="opt" type="button" data-restore-correction="${e.start},${e.end}" ${busy?"disabled":""}>Restore original</button></div></div>`).join("")}
+   ${edits.map(e=>`<div class="text-correction"><div><del>${esc(e.original)}</del> → <strong>${esc(e.replacement)}</strong></div><p class="sub">${e.origin==="model_confirmed"?"Human accepted model text proposal":"Human text correction"}</p><div class="opts"><button class="opt" type="button" data-edit-correction="${e.start},${e.end}">Edit correction</button><button class="opt" type="button" data-restore-correction="${e.start},${e.end}" ${busy?"disabled":""}>Restore original</button></div></div>`).join("")}
    <p class="sub">Original captions and judge quotes are preserved. Existing scores have not been recalculated.</p></details>`:""}`;
+}
+function textProposalPanel(recording,lo,hi){
+ if(!HAS("captions"))return "";
+ const data=transcriptCache[recording.key],decisions=correctionAnswers[recording.key]?.proposal_decisions||[];
+ const rows=(data.text_suggestions||[]).map((p,i)=>({p,i})).filter(({p})=>p.start<hi&&p.end>lo);
+ if(!rows.length)return "";
+ const busy=correctionPending[recording.key]||!writable||Object.keys(correctionForms).some(k=>k.startsWith(recording.key+":"));
+ return `<section class="text-proposals" aria-label="Model text proposals"><b>Model text proposals</b><p class="sub">Review each proposed change. The transcript changes only after you accept.</p>${rows.map(({p,i})=>{
+  const decision=decisions.find(d=>d.bundle_sha256===data.suggestion_bundle_sha256&&d.index===i);
+  const overlap=editsFor(recording).some(e=>e.start<p.end&&e.end>p.start);
+  return `<div class="text-proposal"><div><del>${esc(p.original)}</del> → <strong>${esc(p.replacement)}</strong></div><p class="sub">${esc(p.reason)}</p>${decision?`<p class="sub">${decision.decision==="accepted"?"Accepted by you; saved corrections below show the current wording.":"Rejected by you; this proposal was not applied."}</p>`:`<p class="sub">Model suggestion · unconfirmed${overlap?" · overlaps your saved correction; review it manually":""}</p><div class="opts"><button type="button" class="opt" data-text-proposal="${i}" data-decision="accepted" ${busy||overlap?"disabled":""}>Accept text change</button><button type="button" class="opt" data-text-proposal="${i}" data-decision="rejected" ${busy?"disabled":""}>Reject text change</button></div>`}</div>`;
+ }).join("")}</section>`;
 }
 function openCorrection(recording,index,bounds){
  if(!writable||correctionPending[recording.key])return;
@@ -44,11 +56,11 @@ function openCorrection(recording,index,bounds){
  drawSpanEditor(recording,index);
  document.querySelector(`[data-span-editor="${index}"] [data-corrected-text]`)?.focus();
 }
-async function persistCorrections(recording,edits,index){
+async function persistCorrections(recording,edits,index,proposalAction=null){
  if(correctionPending[recording.key])return;
  const data=transcriptCache[recording.key],prior=correctionAnswers[recording.key];
  const value={key:recording.key,text_sha256:data.text_sha256,token_count:data.token_count,
-  edits,revision:prior?.revision||0};  // the server sets checked_by
+  ...(proposalAction?{proposal_action:proposalAction}:{edits}),revision:prior?.revision||0};  // the server sets checked_by
  correctionPending[recording.key]=true;delete correctionErrors[recording.key];drawAllSpans(recording);
  try{
   const result=await saver.put("corrections",recording.key,value);
@@ -59,6 +71,8 @@ async function persistCorrections(recording,edits,index){
 }
 function bindCorrections(root,recording,index){
  const id=recording.key+":"+index,form=correctionForms[id];
+ root.querySelectorAll('[data-text-proposal]').forEach(b=>b.onclick=()=>persistCorrections(recording,null,index,{
+  bundle_sha256:transcriptCache[recording.key].suggestion_bundle_sha256,index:Number(b.dataset.textProposal),decision:b.dataset.decision}));
  const correct=root.querySelector('[data-correct-text]');if(correct)correct.onclick=()=>{
   const selected=spanSelections[id];if(selected)openCorrection(recording,index,selected);
  };

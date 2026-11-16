@@ -2,7 +2,7 @@
 
 A labeling service that runs on your Mac, for transcripts that a coding agent
 needs a person to check. An agent such as Claude Code or Codex gives the service
-a transcript, prepares contextual speaker suggestions with an explicitly
+a transcript, prepares contextual speaker and text suggestions with an explicitly
 selected model, and sends you a review link. You open it, confirm or correct who
 said which words, correct any caption errors and press Finish. The agent then
 reads your labels back as JSON.
@@ -54,6 +54,13 @@ groups fragments for reading while keeping every original caption and
 timestamp available.
 Click **Accept** beside a suggested speaker block to confirm that block's words.
 Your other markings stay as they are, and **Undo marking** reverses the acceptance.
+
+**Model text proposals** show a proposed wording change and its reason. Use
+**Accept text change** or **Reject text change** for each proposal. Acceptance
+changes the reading and correction export while preserving the source text and
+speaker marks. A proposal cannot overwrite your existing text edits. Use
+**Restore original** to undo an accepted correction. Text proposals follow the
+same correction opt-out and blind reveal settings as the rest of the review.
 
 Passages include 45 seconds of dialogue before and after their saved window,
 rounded outward to complete captions. This also applies to existing reviews.

@@ -202,3 +202,6 @@ button:focus-visible,a:focus-visible,textarea:focus-visible,.item:focus-visible{
 .qtitle{display:block;font-size:.92rem}
 label.note{display:grid;gap:4px;font-size:.8rem;color:var(--muted)}
 label.note small{color:var(--faint)}
+/* Model wording proposals remain separate from the reading until accepted. */
+.text-proposals {border:1px dashed var(--muted);border-radius:8px;padding:12px;margin:12px 0;}
+.text-proposal + .text-proposal {border-top:1px solid var(--rule);margin-top:10px;padding-top:10px;}
